@@ -44,8 +44,7 @@ hardcoded_domains = [
     "supremeai-backend-v2.onrender.com",
     "supremeai-backend-v2.onrender.com",
     "supremeai-lac.vercel.app",
-    "supremeai-studio.vercel.app",
-    "supremeai-admin.web.app"
+    "supremeai-studio.vercel.app"
 ]
 
 # বাংলা: SCRIPT-INTELLIGENCE v9 — domain-rule-এর জন্য ফাইল-ভিত্তিক অব্যাহতি।
@@ -55,10 +54,10 @@ hardcoded_domains = [
 # check_hardcoded_deployment_config.py-র EXCEPTION_SPECS-এর একই sanctioned
 # শ্রেণি; গার্ড টেস্ট: tests/middleware/test_cors_policy.py.
 DOMAIN_RULE_EXEMPT_FILES = {
-    "backend/middleware/cors_policy.py",
-    "backend/core/config_fields.py",
-    "frontend/src/utils/portalHosts.ts",
-    "frontend/src/router/AdminHostEntry.tsx",
+    "core/middleware/cors_policy.py",
+    "gateway/middleware/cors_policy.py",
+    "core/config_fields.py",
+    "core/core/config_fields.py",
 }
 
 # 2. No scattered os.getenv for canonical endpoints
