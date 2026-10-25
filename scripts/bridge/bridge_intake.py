@@ -720,6 +720,61 @@ def process_issue(issue: dict, token: str, work: Path, results: list[str]) -> No
     results.append(f"#{num} → applied, {target_repo} PR #{pr['number']} ({task_id}){retry_note}")
 
 
+# Repeat-failure quarantine marker (#report-verify F-02): এই HTML comment থাকলে
+# বোঝা যায় ওই work order আগের রানেও ERROR/UNEXPECTED হয়েছিল — অর্থাৎ প্রতি
+# hourly/scheduled run-এ একই অর্ডার বারবার ব্যর্থ হচ্ছে (poison-order loop) এবং
+# পুরো Bridge Intake স্থায়ীভাবে লাল থাকছে। দ্বিতীয়বার ব্যর্থ হলে অর্ডারকে
+# bridge:admin-review-এ quarantine করা হয় — owner দেখবেন, queue মুক্ত থাকবে।
+REPEAT_FAILURE_MARKER = "<!-- bridge-intake:repeat-failure -->"
+
+
+def _issue_has_repeat_failure_marker(token: str, num: int) -> bool:
+    try:
+        comments = gh_paged(f"/repos/{OPEN_REPO}/issues/{num}/comments?per_page=100", token, max_pages=2)
+    except BridgeError:
+        return False  # fail-open: marker যাচাই অনিশ্চিত হলে quarantine স্কিপ — পরের রানে আবার চেষ্টা
+    return any(REPEAT_FAILURE_MARKER in (c.get("body") or "") for c in comments)
+
+
+def _handle_intake_failure(token: str, issue: dict, detail: str, results: list[str]) -> None:
+    """একটি work order-এর per-run ব্যর্থতা: প্রথমবার marker-সহ সতর্ক-কমেন্ট (এক রানের
+    grace), দ্বিতীয়বার bridge:admin-review-এ quarantine — পাইপলাইন লাল জিম্মি
+    করে রাখা বন্ধ (F-02)। rc সৎ থাকে: quarantine নিজেই এই রানের রেজোলিউশন।"""
+    num = issue["number"]
+    if _issue_has_repeat_failure_marker(token, num):
+        try:
+            comment_issue(
+                OPEN_REPO, token, num,
+                sanitize_public_comment(
+                    "## 🌉 Bridge Intake — **QUARANTINED** (repeat failure)\n\n"
+                    f"- reason: টানা ২ রান ব্যর্থ — `{detail[:160]}`\n"
+                    "- অর্ডারটি `bridge:admin-review`-এ সরানো হলো — owner রিভিউ করে "
+                    "হয় ঠিক করবেন, হয় বন্ধ করবেন। queue মুক্ত থাকবে।",
+                    token,
+                ),
+            )
+            set_labels(OPEN_REPO, token, num, [LABEL_ADMIN])
+            results.append(f"#{num} → QUARANTINED (repeat failure): {detail[:80]}")
+        except Exception as exc:  # noqa: BLE001 — quarantine-ও ব্যর্থ হলে সৎ error-ই থাক
+            results.append(f"#{num} → ERROR (quarantine failed): {type(exc).__name__}: {str(exc)[:80]}")
+        return
+    try:
+        comment_issue(
+            OPEN_REPO, token, num,
+            sanitize_public_comment(
+                f"{REPEAT_FAILURE_MARKER}\n\n"
+                "## 🌉 Bridge Intake — ⚠️ **RETRY PENDING** (first failure)\n\n"
+                f"- reason: `{detail[:160]}`\n"
+                "- এই অর্ডার পরের intake রানেও ব্যর্থ হলে স্বয়ংক্রিয়ভাবে "
+                "`bridge:admin-review`-এ চলে যাবে (poison-order quarantine)।",
+                token,
+            ),
+        )
+    except Exception:  # noqa: BLE001 — কমেন্ট ব্যর্থ হলেও মূল error রিপোর্ট হবে
+        pass
+    results.append(f"#{num} → {detail[:100]}")
+
+
 def cmd_intake(token: str) -> int:
     ensure_public_labels(token)  # E6: set_labels 422 → reject-পথ ব্যর্থ → queue আটকে যাওয়া প্রতিরোধ
     # E5: per_page=40 → টানা পেজ (Link rel=next); cap-এ পৌঁছালে সৎ-ব্যর্থতা, কাটা নয়।
@@ -735,13 +790,13 @@ def cmd_intake(token: str) -> int:
             try:
                 process_issue(issue, token, work, results)
             except BridgeError as exc:
-                results.append(f"#{issue['number']} → ERROR (honest): {str(exc)[:120]}")
+                _handle_intake_failure(token, issue, f"ERROR (honest): {str(exc)[:120]}", results)
             except Exception as exc:  # noqa: BLE001 — fail-honest per-issue, loop continues
-                results.append(f"#{issue['number']} → UNEXPECTED: {type(exc).__name__}: {str(exc)[:120]}")
+                _handle_intake_failure(token, issue, f"UNEXPECTED: {type(exc).__name__}: {str(exc)[:120]}", results)
     print("== bridge intake ==")
     for line in results or ["queue empty"]:
         print(" -", line)
-    unexpected = [r for r in results if "UNEXPECTED" in r or "ERROR" in r]
+    unexpected = [r for r in results if ("UNEXPECTED" in r or "ERROR" in r) and "QUARANTINED" not in r]
     return 2 if unexpected else 0
 
 
