@@ -155,34 +155,31 @@ EXCEPTION_SPECS: list[tuple[str, str, tuple[str, ...] | None]] = [
     # fire when CORS env sync to the host fails (live incident guard). This is
     # an allow-list of browser origins, NOT a deployment pin (the app never
     # calls these hosts) — same sanctioned class as config_validation.py's
-    # ALLOWED_HOSTS derivation. Guarded by
-    # tests/middleware/test_cors_policy.py::test_production_frontend_origins_are_safe_defaults.
+    # ALLOWED_HOSTS derivation.
+    # Admin-host retirement (2026-10-25, PR #1247 follow-up):
+    # https://supremeai-admin.web.app is fully removed from the codebase — the
+    # admin console now lives at https://supremeai-studio.pages.dev (route
+    # /admin), which needs no exception here because *.pages.dev is not a
+    # banned pattern class. Anchors updated from the retired backend/* layout
+    # to the live core/* + gateway/* duplicates.
     (
-        "backend/middleware/cors_policy.py",
-        r"supremeai-a\.web\.app|supremeai-admin\.web\.app|supremeai-lac\.vercel\.app|supremeai-studio\.vercel\.app",
+        "core/middleware/cors_policy.py",
+        r"supremeai-a\.web\.app|supremeai-lac\.vercel\.app|supremeai-studio\.vercel\.app",
         None,
     ),
     (
-        "backend/core/config_fields.py",
-        r"supremeai-a\.web\.app|supremeai-admin\.web\.app|supremeai-lac\.vercel\.app|supremeai-studio\.vercel\.app",
-        None,
-    ),
-    # Issue #1468 (PR #1468/#1549 wave): portal identity bootstrap. The SPA is
-    # one build for user + admin portals; the host-detection module seeds
-    # detection with the known Firebase Hosting admin console so the admin URL
-    # renders the admin console out of the box. VITE_ADMIN_HOSTS (env) always
-    # extends/overrides — same failsafe-defaults class as the CORS origins
-    # above, not a deployment pin (the app never calls out to the host).
-    # Two files carry the reference: the detection util + the admin entry
-    # component (moved here by the #1549 admin-route consolidation).
-    (
-        "frontend/src/utils/portalHosts.ts",
-        r"supremeai-admin\.web\.app",
+        "gateway/middleware/cors_policy.py",
+        r"supremeai-a\.web\.app|supremeai-lac\.vercel\.app|supremeai-studio\.vercel\.app",
         None,
     ),
     (
-        "frontend/src/router/AdminHostEntry.tsx",
-        r"supremeai-admin\.web\.app",
+        "core/config_fields.py",
+        r"supremeai-a\.web\.app|supremeai-lac\.vercel\.app|supremeai-studio\.vercel\.app",
+        None,
+    ),
+    (
+        "core/core/config_fields.py",
+        r"supremeai-a\.web\.app|supremeai-lac\.vercel\.app|supremeai-studio\.vercel\.app",
         None,
     ),
 ]
