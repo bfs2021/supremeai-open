@@ -18,24 +18,25 @@ Zero-hardcode policy — fails fast (exit 1) if any of the following hold:
   - BACKEND_URL (when provided) points at a Firebase Hosting domain
     (`*.web.app` / `*.firebaseapp.com`) — hosting sites are not API origins
 
-Hosting targets (FB-06, issue #587) — documented intentionally-same artifact:
-  the template defines TWO hosting targets, `user` (site `supremeai-a`) and
-  `admin` (site `supremeai-admin`), and BOTH ship the identical unified SPA
-  bundle (`"public": "frontend/dist"`). This is deliberate, not a bug: the
-  admin/user distinction is runtime route-based inside ONE frontend build —
-  the portal-split build architecture (VITE_PORTAL_TYPE, dist-admin/
-  dist-user, build:admin/build:user) was declared OBSOLETE and is FORBIDDEN
-  by the CI gate `scripts/ci/check_single_frontend.py` (Gate A). Consequences
-  that are accepted and intended:
-  - `supremeai-admin.web.app` serves the exact same SPA as
-    `supremeai-a.web.app` (same bundle hash/ETag) — access control to
-    admin functionality lives in the app (route guards + backend
-    /admin-api authZ), not in a different bundle.
-  - `firebase deploy --only hosting` necessarily deploys the same artifact
-    to both sites; a deploy of "just admin" is not meaningful while both
-    targets share the bundle. If a genuinely separate admin build is ever
-    needed, that is an architecture change requiring the single-frontend
-    gate to be revisited first — not a config tweak here.
+Hosting targets (FB-06, issue #587) — status after the admin-host retirement
+(2026-10-25, follows PR #1247):
+  the template historically defined TWO hosting targets, `user` (site
+  `supremeai-a`) and `admin` (site `supremeai-admin`), both shipping the
+  identical unified SPA bundle (`"public": "frontend/dist"`). The admin/user
+  distinction is runtime route-based inside ONE frontend build — the
+  portal-split build architecture (VITE_PORTAL_TYPE, dist-admin/dist-user,
+  build:admin/build:user) is OBSOLETE and FORBIDDEN by the CI gate
+  `scripts/ci/check_single_frontend.py` (Gate A).
+
+  RETIRED: the `admin` Firebase Hosting site https://supremeai-admin.web.app
+  is fully decommissioned. A stale Cloudflare edge redirect used to bounce
+  studio.pages.dev/admin visitors to it (fixed in studio/public/_redirects
+  with `200!` force rewrites), and the backend CORS floors no longer list it.
+  The admin console now lives in the Studio SPA at
+  https://supremeai-studio.pages.dev (route /admin). Operators must drop the
+  `admin` target from the deploy-time firebase.template.json (root, gitignored)
+  and release the Firebase site; the generator only validates rewrite/header
+  contracts and does not depend on either target existing.
 """
 
 import json
