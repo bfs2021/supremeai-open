@@ -161,7 +161,11 @@ class SettingsFieldsMixin:
     )
     admin_cors_origins: str | list[str] = Field(
         default=[
-            "https://supremeai-admin.web.app",  # Firebase Hosting admin console
+            # Admin-host retirement (2026-10-25, follows PR #1247): the legacy
+            # Firebase Hosting admin console is fully removed from the defaults —
+            # the admin console now lives in the Studio SPA at
+            # https://supremeai-studio.pages.dev (route /admin).
+            "https://supremeai-studio.pages.dev",
         ],
         validation_alias="ADMIN_CORS_ORIGINS",
     )
