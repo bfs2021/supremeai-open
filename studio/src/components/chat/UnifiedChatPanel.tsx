@@ -2,6 +2,8 @@ import React from 'react';
 import { Activity, RefreshCcw, RotateCcw, Search, Sparkles, WandSparkles, X, Zap } from 'lucide-react';
 import { UnifiedChatBubble } from './UnifiedChatBubble';
 import { brandFrom, brandTooltip, TIER_CLASS, type Brand } from '../../lib/brandLabel';
+// JARVIS INTENT ROUTER (owner request 2026-10-25, Phase A): shared local command layer.
+import { tryHandleIntent } from '../../lib/jarvis';
 
 // UNIFIED CHAT (Phase 1, 2026-10-24): the chat core (engine + panel UI) was
 // extracted from src/pages/PublicPages.tsx so guest, user and admin
@@ -578,6 +580,20 @@ export function UnifiedChatPanel({
       });
     };
     try {
+      // JARVIS INTENT ROUTER (owner request 2026-10-25, Phase A): local,
+      // zero-quota commands (/help /status /remember /recall /forget /todo
+      // /remind /search) resolve instantly without hitting the AI relay —
+      // free-tier friendly and they work offline. Anything unmatched falls
+      // through to the normal relay path below.
+      try {
+        const jarvis = await tryHandleIntent(text);
+        if (jarvis) {
+          setAwaitingFirst(false);
+          dismissDemandScreen();
+          setMessages((m) => [...m.slice(0, -1), { role: 'assistant', text: jarvis.text, via: jarvis.via }]);
+          return;
+        }
+      } catch { /* a misfiring local command must never break the chat */ }
       if (apiKey) { try { localStorage.setItem('supremeai_api_key', apiKey); } catch (e) { void e; } }
       let activeConvId = conversationId;
       if (!activeConvId) {
