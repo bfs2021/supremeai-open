@@ -73,11 +73,17 @@ DEFAULT_USER_ALLOWED_ORIGINS: tuple[str, ...] = (
     "https://supremeai-studio.vercel.app",  # Vercel studio
 )
 
-# Issue #1484 (CRITICAL): same story for the admin console —
-# https://supremeai-admin.web.app must stay preflight-able even when
-# ADMIN_CORS_ORIGINS fails to sync to the host.
+# Issue #1484 (CRITICAL): same story for the admin console — the admin origin
+# must stay preflight-able even when ADMIN_CORS_ORIGINS fails to sync to the host.
+# Admin-host retirement (2026-10-25, follows PR #1247): the legacy Firebase
+# Hosting admin console site is FULLY RETIRED — a stale Cloudflare edge
+# redirect used to bounce /admin visitors to it, and keeping it in the CORS
+# floor kept advertising a dead origin. The admin console now lives inside
+# the Studio SPA at https://supremeai-studio.pages.dev (route /admin) —
+# same failsafe-defaults class as before: env vars only ADD origins, they
+# can never evict this floor.
 DEFAULT_ADMIN_ALLOWED_ORIGINS: tuple[str, ...] = (
-    "https://supremeai-admin.web.app",  # Firebase Hosting admin console
+    "https://supremeai-studio.pages.dev",  # Studio SPA admin console (route /admin)
 )
 
 
