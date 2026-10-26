@@ -1,7 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { JarvisAdminGate } from './JarvisAdminGate';
-import * as totpUtils from '../../../utils/totp';
+
+const { adminTotpVerify, adminTrustedBrowserLogin } = vi.hoisted(() => ({
+  adminTotpVerify: vi.fn(),
+  adminTrustedBrowserLogin: vi.fn(),
+}));
+
+// বাংলা: gate এখন সার্ভার-যাচাইকৃত — লোকাল TOTP/PIN/QR-seed কিছুই নেই,
+// তাই authService মক করাই যথেষ্ট।
+vi.mock('../../../services/authService', () => ({
+  authService: {
+    adminTotpVerify,
+    adminTrustedBrowserLogin,
+  },
+}));
 
 describe('JarvisAdminGate', () => {
   beforeEach(() => {
@@ -9,36 +22,38 @@ describe('JarvisAdminGate', () => {
     vi.clearAllMocks();
   });
 
-  it('bypasses gate immediately when 7-day trusted token is valid in localStorage', () => {
+  it('unlocks silently when the DB-backed trusted browser token is server-valid', async () => {
     const onUnlocked = vi.fn();
-    const future = Date.now() + 1000 * 60 * 60 * 24 * 7;
-    localStorage.setItem('jarvis_admin_trusted_until', future.toString());
+    localStorage.setItem('supreme_trusted_browser_token', 'raw-trusted-token');
+    adminTrustedBrowserLogin.mockResolvedValue({ status: 'trusted_browser', token: 'jwt' });
 
     render(<JarvisAdminGate onUnlocked={onUnlocked} />);
-    expect(onUnlocked).toHaveBeenCalledTimes(1);
-  });
-
-  it('unlocks with emergency master PIN 1955 and stores 7-day trust when checked', async () => {
-    const onUnlocked = vi.fn();
-    render(<JarvisAdminGate onUnlocked={onUnlocked} />);
-
-    const input = screen.getByPlaceholderText('000 000');
-    fireEvent.change(input, { target: { value: '1955' } });
-
-    const authBtn = screen.getByRole('button', { name: /AUTHENTICATE/i });
-    fireEvent.click(authBtn);
 
     await waitFor(() => {
+      expect(adminTrustedBrowserLogin).toHaveBeenCalledWith('raw-trusted-token');
       expect(onUnlocked).toHaveBeenCalledTimes(1);
     });
-
-    const trusted = Number(localStorage.getItem('jarvis_admin_trusted_until'));
-    expect(trusted).toBeGreaterThan(Date.now() + 1000 * 60 * 60 * 24 * 6);
+    // বাংলা: code ছাড়া প্রবেশ শুধুই সার্ভার-যাচাইয়ের পর — কোনো ক্লায়েন্ট শর্টকাট নেই।
+    expect(adminTotpVerify).not.toHaveBeenCalled();
   });
 
-  it('verifies 6-digit TOTP code and auto-submits upon 6 digits', async () => {
+  it('stays locked when the trusted browser token is server-rejected (expired)', async () => {
     const onUnlocked = vi.fn();
-    vi.spyOn(totpUtils, 'verifyTotpCode').mockResolvedValue(true);
+    localStorage.setItem('supreme_trusted_browser_token', 'stale-token');
+    adminTrustedBrowserLogin.mockRejectedValue({ message: 'expired' });
+
+    render(<JarvisAdminGate onUnlocked={onUnlocked} />);
+
+    await waitFor(() => {
+      expect(adminTrustedBrowserLogin).toHaveBeenCalled();
+    });
+    expect(onUnlocked).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText('000 000')).toBeInTheDocument();
+  });
+
+  it('unlocks with a server-verified 6-digit code and auto-submits upon 6 digits', async () => {
+    const onUnlocked = vi.fn();
+    adminTotpVerify.mockResolvedValue({ status: 'success', token: 'admin-jwt' });
 
     render(<JarvisAdminGate onUnlocked={onUnlocked} />);
 
@@ -46,14 +61,32 @@ describe('JarvisAdminGate', () => {
     fireEvent.change(input, { target: { value: '123456' } });
 
     await waitFor(() => {
-      expect(totpUtils.verifyTotpCode).toHaveBeenCalledWith('123456', expect.any(String), 1);
+      expect(adminTotpVerify).toHaveBeenCalledWith('123456', true);
       expect(onUnlocked).toHaveBeenCalledTimes(1);
     });
   });
 
-  it('shows error message on incorrect code', async () => {
+  it('does NOT unlock with the old emergency PIN 1955 — the server rejects it', async () => {
     const onUnlocked = vi.fn();
-    vi.spyOn(totpUtils, 'verifyTotpCode').mockResolvedValue(false);
+    adminTotpVerify.mockRejectedValue({ message: 'Invalid authentication code.' });
+
+    render(<JarvisAdminGate onUnlocked={onUnlocked} />);
+
+    const input = screen.getByPlaceholderText('000 000');
+    // ৪-ডিজিট PIN আর কোনো শর্টকাট নয় — সরাসরি সার্ভারে যায় এবং প্রত্যাখ্যাত হয়
+    fireEvent.change(input, { target: { value: '1955' } });
+    fireEvent.click(screen.getByRole('button', { name: /AUTHENTICATE/i }));
+
+    await waitFor(() => {
+      expect(adminTotpVerify).toHaveBeenCalled();
+    });
+    expect(onUnlocked).not.toHaveBeenCalled();
+    expect(input).toBeInTheDocument();
+  });
+
+  it('shows server error message on incorrect code', async () => {
+    const onUnlocked = vi.fn();
+    adminTotpVerify.mockRejectedValue({ message: 'Invalid authentication code.' });
 
     render(<JarvisAdminGate onUnlocked={onUnlocked} />);
 
@@ -61,30 +94,22 @@ describe('JarvisAdminGate', () => {
     fireEvent.change(input, { target: { value: '999999' } });
 
     await waitFor(() => {
-      expect(screen.getByText(/Invalid Authenticator code|Access denied/i)).toBeInTheDocument();
+      expect(screen.getByText(/Invalid authentication code/i)).toBeInTheDocument();
       expect(onUnlocked).not.toHaveBeenCalled();
     });
   });
 
-  it('opens and closes Google Authenticator setup modal with QR code option', async () => {
+  it('surfaces a server-side error when TOTP is not configured (fail-closed)', async () => {
     const onUnlocked = vi.fn();
+    adminTotpVerify.mockRejectedValue({ message: 'TOTP secret not configured.' });
+
     render(<JarvisAdminGate onUnlocked={onUnlocked} />);
 
-    const setupBtn = screen.getByRole('button', { name: /Setup Authenticator/i });
-    fireEvent.click(setupBtn);
-
-    expect(screen.getByText(/Setup Google Authenticator/i)).toBeInTheDocument();
-    expect(screen.getByText(/Scan this QR code with/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('000 000'), { target: { value: '111111' } });
 
     await waitFor(() => {
-      expect(screen.getByAltText(/Google Authenticator QR Code/i)).toBeInTheDocument();
-    });
-
-    const closeBtn = screen.getByRole('button', { name: /Close setup modal/i });
-    fireEvent.click(closeBtn);
-
-    await waitFor(() => {
-      expect(screen.queryByText(/Scan this QR code with/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/TOTP secret not configured/i)).toBeInTheDocument();
+      expect(onUnlocked).not.toHaveBeenCalled();
     });
   });
 });
