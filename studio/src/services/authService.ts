@@ -15,6 +15,17 @@ export const authService = {
     return { ...response, token: response.token ?? response.access_token ?? response.jwt };
   },
 
+  // বাংলা: DB-backed trusted-browser পুনঃপ্রবেশ — ৭ দিনের মেয়াদের মধ্যে
+  // ব্রাউজার ডাটাবেসে সেভ থাকলে email/password/code ছাড়াই admin JWT।
+  // সার্ভারই একমাত্র যাচাইকারী — ক্লায়েন্টে কোনো trust shortcut নেই।
+  adminTrustedBrowserLogin: async (trustedBrowserToken: string): Promise<{ status: string; token?: string; email?: string }> => {
+    const response = await apiClient.post<{ status: string; token?: string; access_token?: string; jwt?: string; email?: string }>(
+      '/api/admin/login',
+      { trusted_browser_token: trustedBrowserToken }
+    );
+    return { ...response, token: response.token ?? response.access_token ?? response.jwt };
+  },
+
   adminTotpVerify: async (otp: string, rememberBrowser = false): Promise<{ status: string; token: string; trusted_browser_token?: string }> => {
     const response = await apiClient.post<{ status: string; token: string; trusted_browser_token?: string }>(
       '/api/admin/totp-verify',
@@ -39,11 +50,15 @@ export const authService = {
   },
 
   revokeTrustedBrowser: async (): Promise<void> => {
-    clearTrustedBrowserToken();
+    const raw = getTrustedBrowserToken();
     try {
-      await apiClient.delete('/api/admin/trusted-browsers');
+      // বাংলা: কাঁচা টোকেনের ধারকই বৈধ মালিক — উপস্থাপন করে প্রত্যাহার।
+      await apiClient.delete('/api/admin/trusted-browsers', {
+        headers: raw ? { 'X-Trusted-Browser-Token': raw } : undefined,
+      } as RequestInit);
     } catch {
       // best-effort
     }
+    clearTrustedBrowserToken();
   },
 };
