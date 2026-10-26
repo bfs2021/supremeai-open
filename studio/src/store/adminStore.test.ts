@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { eventBus, Events } from '../lib/componentEventBus';
 
-const { adminLogin, adminTotpSetup, adminTotpVerify, adminLogout } = vi.hoisted(() => ({
+const { adminLogin, adminTrustedBrowserLogin, adminTotpVerify, adminLogout } = vi.hoisted(() => ({
   adminLogin: vi.fn(),
-  adminTotpSetup: vi.fn(),
+  adminTrustedBrowserLogin: vi.fn(),
   adminTotpVerify: vi.fn(),
   adminLogout: vi.fn().mockResolvedValue(undefined),
 }));
@@ -11,7 +11,7 @@ const { adminLogin, adminTotpSetup, adminTotpVerify, adminLogout } = vi.hoisted(
 vi.mock('../services/authService', () => ({
   authService: {
     adminLogin,
-    adminTotpSetup,
+    adminTrustedBrowserLogin,
     adminTotpVerify,
     adminLogout,
   },
@@ -28,6 +28,7 @@ const reset = () =>
     adminEmail: '',
     otpRequired: false,
     adminOtp: '',
+    rememberBrowser: false,
     totpSetupRequired: false,
     totpSecret: '',
     provisioningUri: '',
@@ -55,6 +56,7 @@ describe('adminStore (Zero Firebase / Native Auth)', () => {
     useAdminStore.getState().setAdminEmail('a@b.com');
     useAdminStore.getState().setOtpRequired(true);
     useAdminStore.getState().setAdminOtp('123456');
+    useAdminStore.getState().setRememberBrowser(true);
     useAdminStore.getState().setTotpSetupRequired(true);
     useAdminStore.getState().setTotpSecret('secret');
     useAdminStore.getState().setProvisioningUri('uri');
@@ -66,49 +68,26 @@ describe('adminStore (Zero Firebase / Native Auth)', () => {
     expect(s.adminEmail).toBe('a@b.com');
     expect(s.otpRequired).toBe(true);
     expect(s.adminOtp).toBe('123456');
+    expect(s.rememberBrowser).toBe(true);
     expect(s.totpSetupRequired).toBe(true);
     expect(s.totpSecret).toBe('secret');
     expect(s.provisioningUri).toBe('uri');
   });
 
-  it('returns early from login when email/password are missing', async () => {
+  it('returns early when the authentication code is not exactly 6 digits', async () => {
+    useAdminStore.setState({ adminOtp: '12' });
     await useAdminStore.getState().handleAdminLogin();
-    expect(adminLogin).not.toHaveBeenCalled();
+    expect(adminTotpVerify).not.toHaveBeenCalled();
+    expect(useAdminStore.getState().adminError).toContain('6 digits');
   });
 
-  it('records an auth error when login fails', async () => {
-    useAdminStore.getState().setAdminEmail('a@b.com');
-    adminLogin.mockRejectedValue({
-      message: 'bad creds',
-    });
-    await useAdminStore.getState().handleAdminLogin('pw');
-    expect(useAdminStore.getState().adminError).toContain('bad creds');
-  });
-
-  it('requires OTP when the backend reports otp_required', async () => {
-    useAdminStore.getState().setAdminEmail('a@b.com');
-    adminLogin.mockResolvedValue({ status: 'otp_required' });
-    await useAdminStore.getState().handleAdminLogin('pw');
-    expect(useAdminStore.getState().otpRequired).toBe(true);
-  });
-
-  it('starts TOTP setup when backend reports totp_setup_required', async () => {
-    useAdminStore.getState().setAdminEmail('a@b.com');
-    adminLogin.mockResolvedValue({ status: 'totp_setup_required' });
-    adminTotpSetup.mockResolvedValue({ secret: 's3cr3t' });
-    await useAdminStore.getState().handleAdminLogin('pw');
-    const s = useAdminStore.getState();
-    expect(s.totpSetupRequired).toBe(true);
-    expect(s.totpSecret).toBe('s3cr3t');
-    expect(s.provisioningUri).toContain('otpauth');
-  });
-
-  it('authenticates after verifying the TOTP code', async () => {
-    useAdminStore.setState({ adminEmail: 'a@b.com', otpRequired: true, adminOtp: '123456' });
+  it('authenticates after server-verified TOTP code (code-only gate)', async () => {
+    useAdminStore.setState({ adminOtp: '123456' });
     const token = makeJwt({ role: 'admin', exp: Math.floor(Date.now() / 1000) + 3600 });
     adminTotpVerify.mockResolvedValue({ token });
-    await useAdminStore.getState().handleAdminLogin('pw');
+    await useAdminStore.getState().handleAdminLogin();
     const s = useAdminStore.getState();
+    expect(adminTotpVerify).toHaveBeenCalledWith('123456', false);
     expect(s.adminAuthenticated).toBe(true);
     expect(s.adminRole).toBe('admin');
     expect(sessionStorage.getItem('supreme_admin_jwt')).toBe(token);
@@ -116,11 +95,42 @@ describe('adminStore (Zero Firebase / Native Auth)', () => {
   });
 
   it('records an error when TOTP verification fails', async () => {
-    useAdminStore.setState({ adminEmail: 'a@b.com', otpRequired: true, adminOtp: '000000' });
+    useAdminStore.setState({ adminOtp: '000000' });
     adminTotpVerify.mockRejectedValue({ message: 'invalid code' });
-    await useAdminStore.getState().handleAdminLogin('pw');
+    await useAdminStore.getState().handleAdminLogin();
     expect(useAdminStore.getState().adminError).toContain('invalid code');
     expect(useAdminStore.getState().adminAuthenticated).toBe(false);
+  });
+
+  it('silently re-enters via DB-backed trusted browser token', async () => {
+    const token = makeJwt({ role: 'admin', exp: Math.floor(Date.now() / 1000) + 3600 });
+    localStorage.setItem('supreme_trusted_browser_token', 'raw-trusted-token');
+    adminTrustedBrowserLogin.mockResolvedValue({ status: 'trusted_browser', token });
+
+    const ok = await useAdminStore.getState().tryTrustedBrowser();
+
+    expect(ok).toBe(true);
+    expect(adminTrustedBrowserLogin).toHaveBeenCalledWith('raw-trusted-token');
+    expect(useAdminStore.getState().adminAuthenticated).toBe(true);
+    expect(useAdminStore.getState().adminRole).toBe('admin');
+    expect(sessionStorage.getItem('supreme_admin_jwt')).toBe(token);
+  });
+
+  it('fail-closed: clears the trusted token and returns false when the server rejects it', async () => {
+    localStorage.setItem('supreme_trusted_browser_token', 'stale-token');
+    adminTrustedBrowserLogin.mockRejectedValue({ message: 'expired' });
+
+    const ok = await useAdminStore.getState().tryTrustedBrowser();
+
+    expect(ok).toBe(false);
+    expect(useAdminStore.getState().adminAuthenticated).toBe(false);
+    expect(localStorage.getItem('supreme_trusted_browser_token')).toBeNull();
+  });
+
+  it('returns false immediately when no trusted browser token exists', async () => {
+    const ok = await useAdminStore.getState().tryTrustedBrowser();
+    expect(ok).toBe(false);
+    expect(adminTrustedBrowserLogin).not.toHaveBeenCalled();
   });
 
   it('logs out, clears tokens and emits AUTH_LOGOUT', async () => {
