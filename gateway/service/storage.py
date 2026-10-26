@@ -30,6 +30,7 @@ _MEM_FALLBACK: Dict[str, Any] = {
     "conversations": {},
     "messages": {},
     "preferences": {},
+    "trusted_browsers": {},
 }
 _USE_MEM_FALLBACK = False
 
@@ -104,6 +105,21 @@ def init_db() -> None:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);")
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS trusted_browsers (
+                token_hash TEXT PRIMARY KEY,
+                browser_id TEXT UNIQUE NOT NULL,
+                uid TEXT NOT NULL,
+                email TEXT NOT NULL,
+                user_agent TEXT,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                last_used_at REAL,
+                revoked INTEGER NOT NULL DEFAULT 0
+            );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tb_expires ON trusted_browsers(expires_at);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tb_uid ON trusted_browsers(uid);")
         logger.info(f"Gateway SQLite storage initialized at {_DB_PATH}")
     except Exception as exc:
         logger.warning(f"Failed to initialize SQLite storage: {exc}. Using memory fallback.")
@@ -323,6 +339,215 @@ def delete_conversation(conversation_id: str, user_id: Optional[str] = None) -> 
                 _MEM_FALLBACK["messages"].pop(conversation_id, None)
                 return True
             return False
+
+
+# ── Trusted Browser (7-day admin remember) Persistence ─────────────────────
+#
+# বাংলা: admin gate-এ "7 দিন মনে রাখো" চালু করলে ব্রাউজার-চেনা টোকেনের SHA-256
+# হ্যাশ ডাটাবেসে সংরণ হয় (raw token কখনো সেভ হয় না)। ফলে নির্দিষ্ট সময়ের
+# মধ্যে বার বার authentication code দিতে হয় না — এবং টোকেনটি শুধুই সার্ভার-
+# সাইড যাচাইয়ে ব্যবহৃত হয় (ক্লায়েন্ট-সাইড trust timestamp সম্পূর্ণ বাদ)।
+
+
+def save_trusted_browser(
+    token_hash: str,
+    email: str,
+    expires_at: float,
+    user_agent: Optional[str] = None,
+    browser_id: Optional[str] = None,
+    uid: Optional[str] = None,
+) -> None:
+    """Persist a hashed trusted-browser token with its fixed expiry.
+
+    বাংলা: raw টোকেন কখনো সেভ হয় না — শুধু SHA-256 হ্যাশ। browser_id/uid
+    ম্যানেজমেন্ট (লিস্ট/রিভোক) এন্ডপয়েন্টের জন্য রাখা হয়।
+    """
+    now = time.time()
+    with get_db() as conn:
+        if conn is not None:
+            conn.execute(
+                """
+                INSERT INTO trusted_browsers (token_hash, browser_id, uid, email, user_agent, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(token_hash) DO UPDATE SET
+                    email = excluded.email,
+                    user_agent = excluded.user_agent,
+                    expires_at = excluded.expires_at;
+                """,
+                (
+                    token_hash,
+                    browser_id or token_hash[:32],
+                    uid or "admin-root-001",
+                    email,
+                    (user_agent or "")[:200],
+                    now,
+                    expires_at,
+                ),
+            )
+        else:
+            _MEM_FALLBACK["trusted_browsers"][token_hash] = {
+                "id": browser_id or token_hash[:32],
+                "uid": uid or "admin-root-001",
+                "email": email,
+                "user_agent": (user_agent or "")[:200],
+                "created_at": now,
+                "expires_at": expires_at,
+                "last_used_at": None,
+                "revoked": False,
+            }
+
+
+def get_valid_trusted_browser(token_hash: str) -> Optional[Dict[str, Any]]:
+    """Return the trusted-browser record if present and unexpired, else None.
+
+    Expired rows are lazily deleted on lookup (fail-closed: an expired token
+    never authenticates, even if the purge has not run yet).
+    """
+    now = time.time()
+    with get_db() as conn:
+        if conn is not None:
+            row = conn.execute(
+                "SELECT token_hash, email, expires_at, browser_id, uid, revoked FROM trusted_browsers WHERE token_hash = ?;",
+                (token_hash,),
+            ).fetchone()
+            if not row:
+                return None
+            if row["revoked"]:
+                return None
+            if float(row["expires_at"]) <= now:
+                conn.execute("DELETE FROM trusted_browsers WHERE token_hash = ?;", (token_hash,))
+                return None
+            conn.execute(
+                "UPDATE trusted_browsers SET last_used_at = ? WHERE token_hash = ?;",
+                (now, token_hash),
+            )
+            return {
+                "email": row["email"],
+                "expires_at": float(row["expires_at"]),
+                "browser_id": row["browser_id"],
+                "uid": row["uid"],
+            }
+        else:
+            record = _MEM_FALLBACK["trusted_browsers"].get(token_hash)
+            if not record:
+                return None
+            if record.get("revoked", False):
+                return None
+            if float(record.get("expires_at", 0)) <= now:
+                _MEM_FALLBACK["trusted_browsers"].pop(token_hash, None)
+                return None
+            record["last_used_at"] = now
+            return {
+                "email": record["email"],
+                "expires_at": float(record["expires_at"]),
+                "browser_id": record.get("id"),
+                "uid": record.get("uid"),
+            }
+
+
+def delete_trusted_browser(token_hash: str) -> bool:
+    """Revoke a single trusted-browser token by hash. Returns True if a row was removed."""
+    with get_db() as conn:
+        if conn is not None:
+            cur = conn.execute("DELETE FROM trusted_browsers WHERE token_hash = ?;", (token_hash,))
+            return cur.rowcount > 0
+        else:
+            return _MEM_FALLBACK["trusted_browsers"].pop(token_hash, None) is not None
+
+
+def revoke_trusted_browser_by_hash(token_hash: str) -> bool:
+    """Soft-revoke (keep row for audit) — verify refuses revoked tokens."""
+    with get_db() as conn:
+        if conn is not None:
+            cur = conn.execute(
+                "UPDATE trusted_browsers SET revoked = 1 WHERE token_hash = ?;",
+                (token_hash,),
+            )
+            return cur.rowcount > 0
+        else:
+            record = _MEM_FALLBACK["trusted_browsers"].get(token_hash)
+            if not record:
+                return False
+            record["revoked"] = True
+            return True
+
+
+def list_trusted_browsers_for_user(uid: str) -> List[Dict[str, Any]]:
+    """Active (unexpired, unrevoked) trusted browsers for a uid — for the management UI."""
+    now = time.time()
+    with get_db() as conn:
+        if conn is not None:
+            rows = conn.execute(
+                """
+                SELECT browser_id, created_at FROM trusted_browsers
+                WHERE uid = ? AND revoked = 0 AND expires_at > ?
+                ORDER BY created_at DESC;
+                """,
+                (uid, now),
+            ).fetchall()
+            return [
+                {"id": r["browser_id"], "created_at": float(r["created_at"])}
+                for r in rows
+            ]
+        else:
+            return [
+                {"id": r.get("id"), "created_at": float(r.get("created_at", 0))}
+                for r in _MEM_FALLBACK["trusted_browsers"].values()
+                if r.get("uid") == uid and not r.get("revoked", False) and float(r.get("expires_at", 0)) > now
+            ]
+
+
+def revoke_trusted_browser_by_id(uid: str, browser_id: str) -> bool:
+    """Soft-revoke one trusted browser by (uid, browser_id)."""
+    with get_db() as conn:
+        if conn is not None:
+            cur = conn.execute(
+                "UPDATE trusted_browsers SET revoked = 1 WHERE uid = ? AND browser_id = ?;",
+                (uid, browser_id),
+            )
+            return cur.rowcount > 0
+        else:
+            hit = False
+            for r in _MEM_FALLBACK["trusted_browsers"].values():
+                if r.get("uid") == uid and r.get("id") == browser_id:
+                    r["revoked"] = True
+                    hit = True
+            return hit
+
+
+def revoke_all_trusted_browsers_for_user(uid: str) -> int:
+    """Soft-revoke every trusted browser of a uid. Returns the revoked count."""
+    with get_db() as conn:
+        if conn is not None:
+            cur = conn.execute(
+                "UPDATE trusted_browsers SET revoked = 1 WHERE uid = ? AND revoked = 0;",
+                (uid,),
+            )
+            return cur.rowcount
+        else:
+            count = 0
+            for r in _MEM_FALLBACK["trusted_browsers"].values():
+                if r.get("uid") == uid and not r.get("revoked", False):
+                    r["revoked"] = True
+                    count += 1
+            return count
+
+
+def purge_expired_trusted_browsers() -> int:
+    """Delete all expired trusted-browser rows. Returns the number purged."""
+    now = time.time()
+    with get_db() as conn:
+        if conn is not None:
+            cur = conn.execute("DELETE FROM trusted_browsers WHERE expires_at <= ?;", (now,))
+            return cur.rowcount
+        else:
+            expired = [
+                h for h, r in _MEM_FALLBACK["trusted_browsers"].items()
+                if float(r.get("expires_at", 0)) <= now
+            ]
+            for h in expired:
+                _MEM_FALLBACK["trusted_browsers"].pop(h, None)
+            return len(expired)
 
 
 # ── User Preferences & Tool Card Persistence ────────────────────────────────
