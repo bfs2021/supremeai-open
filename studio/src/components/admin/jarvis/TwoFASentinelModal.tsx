@@ -1,7 +1,15 @@
 import { useState } from 'react';
-import { ShieldAlert, Fingerprint, KeyRound, X, CheckCircle2 } from 'lucide-react';
+import { ShieldAlert, KeyRound, X, CheckCircle2 } from 'lucide-react';
 import { ArcReactorOrb } from './ArcReactorOrb';
-import { verifyTotpCode } from '../../../utils/totp';
+import { authService } from '../../../services/authService';
+
+// বাংলা: destructive Jarvis কমান্ডের 2FA Sentinel — এখন শুধুই সার্ভার-যাচাইকৃত
+// ৬-ডিজিট authentication code। আগের ৩টি bypass সম্পূর্ণ বাদ (literal ইচ্ছা করেই
+// নথিতে রাখা হয়নি যেন সিক্রেট-স্ক্যান কখনো বৈধ credential মনে করে):
+//   1. সোর্সে হার্ডকোডেড ডিফল্ট অ্যাডমিন টোকেন
+//   2. হার্ডকোডেড ৪-ডিজিট ইমার্জেন্সি PIN
+//   3. লোকাল biometric assertion (সার্ভার-যাচাই ছাড়াই onAuthorized)
+// কোনো শর্টকাট নেই — সার্ভার প্রত্যাখ্যান করলে কমান্ড চলবে না।
 
 interface TwoFASentinelModalProps {
   command: string;
@@ -9,8 +17,6 @@ interface TwoFASentinelModalProps {
   onAuthorized: () => void;
   onCancel: () => void;
 }
-
-const DEFAULT_ADMIN_TOKEN = 'jarvis-admin-2026';
 
 export function TwoFASentinelModal({
   command,
@@ -21,52 +27,6 @@ export function TwoFASentinelModal({
   const [tokenInput, setTokenInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
-  const [biometricSupported, setBiometricSupported] = useState(
-    typeof window !== 'undefined' && !!window.PublicKeyCredential
-  );
-
-  const handleBiometricAuth = async () => {
-    setVerifying(true);
-    setError(null);
-
-    try {
-      if (!window.PublicKeyCredential) {
-        throw new Error('Platform authenticator not supported on this device.');
-      }
-
-      // Check if user verification is available
-      const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable?.();
-      if (!available) {
-        throw new Error('Biometric hardware (Windows Hello / Touch ID) unavailable. Please enter Admin PIN.');
-      }
-
-      // Create a short assertion challenge
-      const challenge = new Uint8Array(32);
-      window.crypto.getRandomValues(challenge);
-
-      const credential = await navigator.credentials.get({
-        publicKey: {
-          challenge,
-          rpId: window.location.hostname || 'localhost',
-          userVerification: 'preferred',
-          timeout: 60000,
-        },
-      });
-
-      if (credential) {
-        onAuthorized();
-      } else {
-        throw new Error('Biometric verification cancelled.');
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Biometric check cancelled or unavailable.';
-      setError(msg);
-      // Fallback to token PIN input
-      setBiometricSupported(false);
-    } finally {
-      setVerifying(false);
-    }
-  };
 
   const handleTokenSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -74,34 +34,32 @@ export function TwoFASentinelModal({
     const cleaned = tokenInput.trim();
 
     if (!cleaned) {
-      setError('Please enter Admin PIN or TOTP token.');
+      setError('Please enter your 6-digit authentication code.');
       return;
     }
 
-    // 1. Check default token or emergency PIN
-    if (cleaned === DEFAULT_ADMIN_TOKEN || cleaned === '1955') {
-      onAuthorized();
+    if (!/^\d{6}$/.test(cleaned)) {
+      setError('Authentication code must be exactly 6 digits.');
       return;
     }
 
-    // 2. Check 6-digit Google Authenticator TOTP code
-    if (/^\d{6}$/.test(cleaned)) {
-      try {
-        const secret =
-          localStorage.getItem('jarvis_totp_seed') ||
-          ['JBSWY3DP', 'EHPK3PXP', 'JBSWY3DP', 'EHPK3PXP'].join('');
-        const valid = await verifyTotpCode(cleaned, secret, 1);
-        if (valid) {
-          onAuthorized();
-          return;
-        }
-      } catch {
-        // Fall through
+    setVerifying(true);
+    try {
+      // সার্ভারই একমাত্র যাচাইকারী (remember চালু নয় — প্রতি কমান্ডে code লাগবে)
+      const data = await authService.adminTotpVerify(cleaned, false);
+      if (data && data.token) {
+        onAuthorized();
+        return;
       }
+      setError('Invalid authentication code.');
+      setTokenInput('');
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : 'Invalid authentication code.';
+      setError(message);
+      setTokenInput('');
+    } finally {
+      setVerifying(false);
     }
-
-    setError('Invalid security token, PIN, or TOTP code.');
-    setTokenInput('');
   };
 
   return (
@@ -149,29 +107,21 @@ export function TwoFASentinelModal({
           )}
         </div>
 
-        {/* Auth Methods */}
+        {/* Auth Method: server-verified authentication code only */}
         <div className="mt-5 space-y-4">
-          {biometricSupported && (
-            <button
-              type="button"
-              disabled={verifying}
-              onClick={handleBiometricAuth}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-cyan-400/30 bg-cyan-950/30 hover:bg-cyan-900/40 p-3 text-xs font-semibold text-cyan-200 transition disabled:opacity-50"
-            >
-              <Fingerprint size={16} className="text-cyan-400" />
-              {verifying ? 'Awaiting Biometric Prompt...' : 'Verify with Biometrics (Windows Hello)'}
-            </button>
-          )}
-
           <form onSubmit={handleTokenSubmit} className="space-y-3">
             <div className="relative">
               <KeyRound size={15} className="absolute left-3 top-3 text-slate-400" />
               <input
-                type="password"
-                placeholder="Or enter Admin PIN (e.g. 1955)"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                placeholder="Enter 6-digit authentication code"
                 value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)}
-                autoFocus={!biometricSupported}
+                onChange={(e) => setTokenInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                autoFocus
+                autoComplete="one-time-code"
                 className="w-full rounded-xl border border-slate-700 bg-black/40 pl-9 pr-4 py-2.5 text-xs text-slate-200 font-mono placeholder:text-slate-500 outline-none focus:border-cyan-400/50"
               />
             </div>
@@ -192,16 +142,17 @@ export function TwoFASentinelModal({
               </button>
               <button
                 type="submit"
-                className="flex-1 rounded-xl border border-red-500/40 bg-red-600/20 hover:bg-red-600/30 py-2.5 text-xs font-semibold text-red-200 transition flex items-center justify-center gap-1.5"
+                disabled={verifying || tokenInput.length !== 6}
+                className="flex-1 rounded-xl border border-red-500/40 bg-red-600/20 hover:bg-red-600/30 py-2.5 text-xs font-semibold text-red-200 transition flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <CheckCircle2 size={14} /> Authorize & Run
+                <CheckCircle2 size={14} /> {verifying ? 'Verifying...' : 'Authorize & Run'}
               </button>
             </div>
           </form>
         </div>
 
         <p className="mt-4 text-center text-[10px] text-slate-500">
-          Super Admin clearance grants a 5-minute security window.
+          Server-verified clearance only — no PIN or bypass shortcut exists.
         </p>
       </div>
     </div>
