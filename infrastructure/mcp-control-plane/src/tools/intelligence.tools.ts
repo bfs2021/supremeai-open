@@ -155,6 +155,7 @@ export async function registerIntelligenceTools(server: McpServer): Promise<void
 
         if (fs.existsSync(auditScript) && fs.existsSync(reportScript)) {
           const tempOutDir = path.join(REPO_ROOT, ".cache", "audit-temp");
+          let auditFallbackReason: string | undefined;
           fs.mkdirSync(tempOutDir, { recursive: true });
           const rawPath = path.join(tempOutDir, "temp_audit.raw.json");
 
@@ -202,7 +203,11 @@ export async function registerIntelligenceTools(server: McpServer): Promise<void
                 ],
               };
             }
-          } catch {
+          } catch (auditErr) {
+            // bridge-20261027-tower-self-capability (#1329): the silent catch
+            # made fallback audits indistinguishable from real ones. Capture
+            # the reason and carry it into the fallback result below.
+            auditFallbackReason = `browser audit execution failed: ${(auditErr as Error)?.message ?? String(auditErr)}`;
             // Fall through to fast HTTP diagnostics if browser execution errors
           }
         }
@@ -223,11 +228,15 @@ export async function registerIntelligenceTools(server: McpServer): Promise<void
         const result = {
           target: url,
           mode: "http-diagnostic-fallback",
+          degraded: true,
+          fallbackReason: auditFallbackReason ?? "browser audit path unavailable — only HTTP-level checks ran",
           status: resp.status,
           latencyMs,
           securityHeaders: secHeaders,
-          verdict: resp.ok ? "PASS" : "FAIL",
-          summary: `HTTP ${resp.status} received in ${latencyMs}ms. HSTS: ${secHeaders.strictTransportSecurity ? "OK" : "MISSING"}, CSP: ${secHeaders.contentSecurityPolicy ? "OK" : "MISSING"}.`,
+          // (#1329): never claim PASS from fallback mode — no console errors,
+          // no failed requests, no a11y checks actually ran.
+          verdict: resp.ok ? "INCOMPLETE" : "FAIL",
+          summary: `HTTP ${resp.status} received in ${latencyMs}ms. HSTS: ${secHeaders.strictTransportSecurity ? "OK" : "MISSING"}, CSP: ${secHeaders.contentSecurityPolicy ? "OK" : "MISSING"}. Browser-level checks did NOT run${auditFallbackReason ? `: ${auditFallbackReason}` : ""}.`,
         };
 
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
