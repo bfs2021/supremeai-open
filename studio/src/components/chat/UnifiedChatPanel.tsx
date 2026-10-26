@@ -7,6 +7,9 @@ import { brandFrom, brandTooltip, TIER_CLASS, type Brand } from '../../lib/brand
 import { tryHandleIntent } from '../../lib/jarvis';
 import { JarvisAvatar } from '../jarvis/JarvisAvatar';
 import { ChatDockBar, type DockAction, type DockApp } from './ChatDockBar';
+// SATISFACTION PULSE (P2, 2026-10-25 report §7/Table 8): opt-in one-question
+// CSAT micro-survey; admin embeds that omit the prop stay pixel-identical.
+import { SatisfactionPulse } from '../feedback/SatisfactionPulse';
 
 // UNIFIED CHAT (Phase 1, 2026-10-24): the chat core (engine + panel UI) was
 // extracted from src/pages/PublicPages.tsx so guest, user and admin
@@ -301,6 +304,13 @@ export interface UnifiedChatPanelProps {
   dockActions?: DockAction[];
   /** Right Apps menu entries (user-published overlay; hidden when empty). */
   dockApps?: DockApp[];
+  /**
+   * P2 satisfaction measurement (report §7/Table 8): opt-in one-question
+   * CSAT micro-survey. Appears after 90s dwell, at most once per 14 days
+   * (submit OR dismiss starts the window). Defaults to false so dashboard
+   * embeds keep their exact current layout — mirrors the showDock pattern.
+   */
+  showSatisfactionPulse?: boolean;
 }
 
 export type { DockAction, DockApp } from './ChatDockBar';
@@ -499,6 +509,7 @@ export function UnifiedChatPanel({
   showDock = false,
   dockActions,
   dockApps,
+  showSatisfactionPulse = false,
 }: UnifiedChatPanelProps) {
   const [messages, setMessages] = React.useState<{ role: 'user' | 'assistant'; text: string; via?: string; brand?: Brand }[]>(() =>
     initialConversationId ? loadStoredConversation(initialConversationId) : [],
@@ -879,6 +890,10 @@ export function UnifiedChatPanel({
         apps={dockApps}
       />
     )}
+    {/* P2 satisfaction measurement (report §7/Table 8): opt-in micro-survey;
+        self-timed (90s dwell) and self-throttled (14 days) inside the
+        component, so the chat flow itself is untouched. */}
+    {showSatisfactionPulse && <SatisfactionPulse surface="chat" />}
     {demandRetry && (
       <HighDemandScreen
         attempt={demandRetry.attempt}
