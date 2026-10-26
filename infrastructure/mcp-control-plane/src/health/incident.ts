@@ -41,7 +41,9 @@ export class IncidentEngine {
         provider,
         timestamp,
         type,
-        message: `Provider ${provider} transitioned to ${newStatus}. Error: ${errorDetails || "None"}`,
+        message: errorDetails
+          ? `Provider ${provider} transitioned to ${newStatus}. Error: ${errorDetails}`
+          : `Provider ${provider} transitioned to ${newStatus}. No error captured — inspect snapshot evidence for the transition reason.`,
         impactedServices: impacted
       };
     }
@@ -65,7 +67,9 @@ export class IncidentEngine {
         provider,
         timestamp,
         type: "OUTAGE",
-        message: `Provider ${provider} escalated from degraded to ${newStatus}. Error: ${errorDetails || "None"}`,
+        message: errorDetails
+          ? `Provider ${provider} escalated from degraded to ${newStatus}. Error: ${errorDetails}`
+          : `Provider ${provider} escalated from degraded to ${newStatus}. No error captured — inspect snapshot evidence.`,
         impactedServices: impacted
       };
     }
