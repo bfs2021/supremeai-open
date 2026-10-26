@@ -102,7 +102,30 @@ export class HealthEngine {
             : deployStatus === "deploy_failed" || deployStatus === "deactivated" || deployStatus === "crashed"
               ? "down"
               : undefined;
-        if (deployDerived) return { ...data, status: deployDerived };
+        if (deployDerived) {
+          // bridge-20261027-frontend-observability (#1335): a failed LAST deploy
+          // is pipeline news, not necessarily service news. When the service
+          // object reports the deployment as live, keep the service honestly
+          // healthy but carry the pipeline failure as structured evidence —
+          // flipping overallStatus to degraded for every consumer on every
+          // rebuild hiccup was the false-alarm culture this order removes.
+          const serviceState = String(
+            data?.service?.suspendedIndicator ?? data?.service?.status ?? data?.status ?? "",
+          ).toLowerCase();
+          const serviceLive = !["suspended", "deactivated", "crashed", "deploy_failed"].includes(serviceState);
+          if (serviceLive && deployDerived === "degraded") {
+            return {
+              ...data,
+              status: "healthy",
+              error: `last deploy ${deployStatus} — service still serving on the previous release (pipeline attention needed)`,
+            };
+          }
+          return {
+            ...data,
+            status: deployDerived,
+            error: `last deploy ${deployStatus}${serviceLive ? " — service serving on the previous release" : " and service not live"}`,
+          };
+        }
         return data;
       },
       "github": async () => {
