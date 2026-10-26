@@ -12,26 +12,16 @@ export function AdminShell() {
   const {
     adminAuthenticated,
     adminRole,
-    adminEmail,
-    setAdminEmail,
     adminError,
     handleAdminLogin,
-    otpRequired,
+    tryTrustedBrowser,
     adminOtp,
     setAdminOtp,
     rememberBrowser,
     setRememberBrowser,
-    totpSetupRequired,
-    provisioningUri,
-    totpSecret,
     handleAdminLogout,
     actionStatus,
     setActionStatus,
-    resetTotpSetup,
-    recoveryCode,
-    setRecoveryCode,
-    recoverTotp,
-    recoveryCodes,
   } = useAdminStore();
 
   const [adminSubTab, setAdminSubTab] = useState<AdminSubTab>("overview");
@@ -75,6 +65,10 @@ export function AdminShell() {
         if (claims && typeof claims.exp === 'number' && claims.exp * 1000 <= Date.now()) {
           useAdminStore.setState({ adminError: 'Your admin session has expired. Please sign in again.' });
         }
+        // বাংলা (code-only gate): JWT না থাকলে DB-ব্যাকড ৭-দিন trusted-browser
+        // টোকেন সার্ভারে যাচাই — মেয়াদের মধ্যে থাকলে নীরবে প্রবেশ, নাহলে
+        // gate authentication code চাইবে (প্রথমবার দেওয়া বাধ্যতামূলক)।
+        void tryTrustedBrowser();
       }
       return;
     }
@@ -82,7 +76,7 @@ export function AdminShell() {
     if (adminRole !== 'admin') {
       if (import.meta.env.DEV) console.warn("RBAC: User is not an admin.");
     }
-  }, [adminAuthenticated, adminRole]);
+  }, [adminAuthenticated, adminRole, tryTrustedBrowser]);
 
   // LiveLogs Real-Time Stream Hookup (SSE via /admin-api/logs/stream)
   useEffect(() => {
@@ -142,45 +136,9 @@ export function AdminShell() {
     };
   }, [adminAuthenticated]);
 
-  const handleAdminOtpVerify = () => {
-    handleAdminLogin();
-  };
-
-  const handleResetTotp = () => {
-    resetTotpSetup();
-  };
-
-  const handleAuthorize = () => {
-    const adminEmailToUse = (adminEmail || 'admin@supremeai.com').trim();
-    setAdminEmail(adminEmailToUse);
-    try {
-      const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-      const payload = btoa(JSON.stringify({
-        sub: 'admin-fast-pass',
-        uid: 'admin-fast-pass',
-        email: adminEmailToUse,
-        role: 'admin',
-        type: 'access',
-        exp: Math.floor(Date.now() / 1000) + 7 * 86400,
-      }));
-      const mockToken = `${header}.${payload}.fast_pass_authorized`;
-      localStorage.setItem('supreme_admin_jwt', mockToken);
-      sessionStorage.setItem('supreme_admin_jwt', mockToken);
-    } catch {
-      // best-effort token persistence
-    }
-
-    useAdminStore.setState({
-      adminAuthenticated: true,
-      adminRole: 'admin',
-      otpRequired: false,
-      totpSetupRequired: false,
-      adminOtp: '',
-      adminError: '',
-    });
-    setActionStatus('FAST-PASS CLEARANCE GRANTED');
-    setTimeout(() => setActionStatus(''), 2000);
-  };
+  // বাংলা: Fast-Pass Bypass (handleAuthorize) সম্পূর্ণ বাদ — এটি লোকাল মক JWT
+  // বানিয়ে যেকোনো ভিজিটরকে admin বানিয়ে দিত (গুরুতর সিকিউরিটি হোল)। এখন
+  // প্রবেশের একমাত্র পথ: authentication code → সার্ভার যাচাই → admin JWT।
 
   const installSkillMutation = useInstallSkill();
   const handleInstallSkill = (name: string) => {
@@ -363,21 +321,12 @@ export function AdminShell() {
   return (
     <AdminConsole
       adminAuthenticated={adminAuthenticated}
-      adminEmail={adminEmail}
-      setAdminEmail={setAdminEmail}
-      totpSetupRequired={totpSetupRequired}
-      provisioningUri={provisioningUri}
-      totpSecret={totpSecret}
-      onResetTotp={handleResetTotp}
-      onAuthorize={handleAuthorize}
-      recoveryCode={recoveryCode}
-      setRecoveryCode={setRecoveryCode}
-      recoverTotp={recoverTotp}
-      recoveryCodes={recoveryCodes}
       adminError={adminError}
       handleAdminLogin={handleAdminLogin}
-      handleAdminOtpVerify={handleAdminOtpVerify}
-      handleAdminLogout={handleAdminLogout}
+      adminOtp={adminOtp}
+      setAdminOtp={setAdminOtp}
+      rememberBrowser={rememberBrowser}
+      setRememberBrowser={setRememberBrowser}
       actionStatus={actionStatus}
       skillQuery={skillQuery}
       setSkillQuery={setSkillQuery}
@@ -407,7 +356,6 @@ export function AdminShell() {
       setNewUserRole={setNewUserRole}
       newUserPerms={newUserPerms}
       setNewUserPerms={setNewUserPerms}
-      otpRequired={otpRequired}
       adminOtp={adminOtp}
       setAdminOtp={setAdminOtp}
       rememberBrowser={rememberBrowser}
