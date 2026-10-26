@@ -55,11 +55,17 @@ export function DashboardLayout({ header, sidebar, children, isSidebarCollapsed 
 
       <div className="flex-1 flex overflow-hidden relative">
         {sidebar && (
+          /* P2 tail of the 2026-10-25 report (Table 8 row 10, deferred by #1303):
+             width->transform. The old width spring re-laid-out the whole flex
+             row every frame (sidebar + main reflow x60/s). The rail width now
+             flips once per toggle (w-16/w-64, single reflow) and the perceived
+             motion is a compositor-only transform+opacity settle. Same 64/256
+             endpoints, same spring-free feel on the mobile drawer (already x). */
           <motion.aside
             initial={false}
-            animate={{ width: isSidebarCollapsed ? 64 : 256 }}
-            transition={SIDEBAR_SPRING}
-            className="surface-1 border-r border-border hidden md:flex flex-col z-20 shrink-0 overflow-hidden"
+            animate={{ x: [isSidebarCollapsed ? -14 : 14, 0], opacity: [0.9, 1] }}
+            transition={{ duration: 0.24, ease: 'easeOut' }}
+            className={`surface-1 border-r border-border hidden md:flex flex-col z-20 shrink-0 overflow-hidden ${isSidebarCollapsed ? 'w-16' : 'w-64'}`}
           >
             {sidebar}
           </motion.aside>
