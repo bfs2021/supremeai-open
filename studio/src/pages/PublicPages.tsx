@@ -89,7 +89,9 @@ const GUEST_DOCK_APPS = [
 ];
 
 export function GuestChat() {
-  return <UnifiedChatPanel showDock dockApps={GUEST_DOCK_APPS} />;
+  // P2 satisfaction measurement (2026-10-25 report §7/Table 8): guest chat
+  // opts in to the one-question CSAT pulse; self-throttled, dismiss-safe.
+  return <UnifiedChatPanel showDock dockApps={GUEST_DOCK_APPS} showSatisfactionPulse />;
 }
 
 
