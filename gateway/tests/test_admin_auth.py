@@ -69,6 +69,28 @@ def client(monkeypatch):
     return TestClient(app)
 
 
+
+def _compute_totp(secret: str) -> str:
+    """Compute a valid RFC 6238 code for a base32 secret (shared test helper)."""
+    import base64
+    import hashlib
+    import hmac
+    import struct
+    import time
+
+    clean_secret = secret.strip().upper()
+    missing_padding = len(clean_secret) % 8
+    if missing_padding:
+        clean_secret += "=" * (8 - missing_padding)
+    key = base64.b32decode(clean_secret)
+    current_time = int(time.time() // 30)
+    msg = struct.pack(">Q", current_time)
+    h = hmac.new(key, msg, hashlib.sha1).digest()
+    offset = h[19] & 15
+    code_num = struct.unpack(">I", h[offset : offset + 4])[0] & 0x7FFFFFFF
+    return f"{code_num % 1000000:06d}"
+
+
 def test_native_jwt_roundtrip(monkeypatch):
     monkeypatch.setenv("SUPREMEAI_JWT_SECRET", "test-secret")
     token = issue_admin_jwt(uid="admin-123", email="admin@supremeai.com", role="admin")
@@ -262,3 +284,82 @@ def test_trusted_browser_full_lifecycle(client, monkeypatch):
     assert revoked_login.json()["status"] in ("otp_required", "totp_setup_required")
 
 
+
+
+# ── Code-only gate + DB-backed trust (SQLite persistence) ────────────────────
+# বাংলা: user dashboard থেকে admin-এ ঢুকতে শুধু authentication code; ৭-দিন
+# trust ডাটাবেসে থাকে (restart-প্রতিরোধী); কোনো bypass নেই — fail-closed।
+
+
+def _fresh_setup_otp(client) -> str:
+    """Fresh TOTP enrollment → compute a valid OTP from the pending secret.
+
+    বাংলা: টেস্ট-নিরোধক (isolation) — pending setup cache-ই একমাত্র সত্য,
+    অন্য টেস্টের env/secret অবস্থার উপর নির্ভর করে না।
+    """
+    setup = client.post("/api/admin/totp-setup")
+    assert setup.status_code == 200
+    return _compute_totp(setup.json()["secret"])
+
+
+def test_trusted_browser_code_free_reentry_without_credentials(client):
+    # 1. First entry: code is mandatory (remember_browser=true → DB trust)
+    first = client.post(
+        "/api/admin/totp-verify",
+        json={"otp": _fresh_setup_otp(client), "remember_browser": True},
+    )
+    assert first.status_code == 200
+    raw_token = first.json()["trusted_browser_token"]
+
+    # 2. Re-entry with ONLY the trusted token — no email, no password
+    re_entry = client.post("/api/admin/login", json={"trusted_browser_token": raw_token})
+    assert re_entry.status_code == 200
+    re_data = re_entry.json()
+    assert re_data["status"] == "trusted_browser"
+    assert re_data["role"] == "admin"
+
+    # 3. The issued JWT is a real admin JWT
+    me = client.get("/api/admin/me", headers={"Authorization": f"Bearer {re_data['token']}"})
+    assert me.status_code == 200
+    assert me.json()["admin"]["role"] == "admin"
+
+
+def test_trusted_browser_unknown_token_fail_closed(client):
+    # Unknown token + no credentials → 401, never a JWT (no bypass)
+    bad = client.post("/api/admin/login", json={"trusted_browser_token": "not-a-real-token"})
+    assert bad.status_code == 401
+    assert "expired" in bad.json().get("detail", "").lower() or "invalid" in bad.json().get("detail", "").lower()
+
+
+def test_totp_verify_without_remember_issues_no_trust(client):
+    res = client.post(
+        "/api/admin/totp-verify",
+        json={"otp": _fresh_setup_otp(client), "remember_browser": False},
+    )
+    assert res.status_code == 200
+    assert "trusted_browser_token" not in res.json()
+
+
+def test_trusted_browser_revoke_via_raw_token_header(client):
+    first = client.post(
+        "/api/admin/totp-verify",
+        json={"otp": _fresh_setup_otp(client), "remember_browser": True},
+    )
+    raw_token = first.json()["trusted_browser_token"]
+
+    # Possession of the raw token = right to revoke (LOCK button path)
+    revoke = client.delete(
+        "/api/admin/trusted-browsers",
+        headers={"X-Trusted-Browser-Token": raw_token},
+    )
+    assert revoke.status_code == 200
+    assert revoke.json()["revoked"] is True
+
+    # Revoked token no longer re-enters — fail-closed
+    re_entry = client.post("/api/admin/login", json={"trusted_browser_token": raw_token})
+    assert re_entry.status_code == 401
+
+
+def test_trusted_browser_revoke_requires_token_or_bearer(client):
+    res = client.delete("/api/admin/trusted-browsers")
+    assert res.status_code == 401
