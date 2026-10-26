@@ -221,7 +221,35 @@ export function responseIndicatesQuotaExhaustion(status: number, body: string): 
 /** পর্যবেক্ষণের জন্য cooldown snapshot (invariant #5 — fleet observability)।
  *  #646: প্রতিটি entry-তে in-memory usage estimate যোগ হলো (additive —
  *  বিদ্যমান consumer-রা অপরিবর্তিত ফিল্ডেই চলবে)। */
+/**
+ * bridge-20261027-redis-rotation-rule (#1345) invariant: cooldown ⇒ the slot's
+ * OWN usage estimate crossed the soft threshold (or an authoritative Upstash
+ * usage correction arrived). A slot cooling below threshold is a mis-stamp
+ * (cross-slot contagion); it is logged loudly and self-healed immediately so
+ * the wasted free-tier capacity returns to rotation without manual surgery.
+ * @returns true when the slot's cooldown is (still) legitimate.
+ */
+export function assertCooldownInvariant(label: string, nowMs: number = Date.now()): boolean {
+  const until = quotaCooldownUntil.get(label);
+  if (until === undefined) return true;
+  const entry = quotaUsageCount.get(label);
+  const count = entry && entry.windowStartMs === currentQuotaWindowStartMs(nowMs) ? entry.count : 0;
+  if (count >= upstashSoftThreshold()) return true;
+  console.warn(
+    `[redis-chain] COOLDOWN INVARIANT VIOLATION (#1345): "${label}" is cooling until ` +
+      `${new Date(until).toISOString()} but own usage is ${count}/${upstashCommandLimit()} ` +
+      `(< soft threshold ${upstashSoftThreshold()}) — mis-stamped slot self-healed.`,
+  );
+  quotaCooldownUntil.delete(label);
+  return false;
+}
+
 export function quotaChainStatus(nowMs: number = Date.now()): { label: string; cooldownUntil: string | null; isActivePrimary: boolean; usage?: { estimatedCommands: number; limit: number; softThreshold: number; softThresholdHit: boolean } }[] {
+  // Self-heal on every observation: a status read validates each cooling slot
+  // against the invariant, returning mis-stamped capacity to rotation (#1345).
+  for (const label of [...quotaCooldownUntil.keys()]) {
+    assertCooldownInvariant(label, nowMs);
+  }
   const activePrimary = getActiveRedisAccount(nowMs).label;
   const chain = buildAccountChain();
   if (chain.length === 0) {
@@ -487,8 +515,41 @@ export async function runWithAccountChain<T>(
       return { value, account, attempts };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (err instanceof RedisQuotaExhaustedError || responseIndicatesQuotaExhaustion(0, message)) {
+      // ── bridge-20261027-redis-rotation-rule (#1345): attribution guard ──
+      // A cooldown stamp must be attributable to THIS account. Two past bugs:
+      // (a) a nested walk's aggregated error ("All N account(s) failed:
+      //     primary: ERR max requests limit...") matched the quota pattern and
+      //     stamped whichever innocent account the outer loop was visiting
+      //     (secondary sat at 2/500,000 commands yet was cooled until UTC
+      //     reset); (b) a RedisQuotaExhaustedError thrown for a sibling label
+      //     bubbled into the wrong iteration.
+      // Rule: stamp only when the error is a direct RedisQuotaExhaustedError
+      // naming THIS account, or an anonymous quota-shaped message that names
+      // no other chain label. Everything else is recorded as a plain failure.
+      let stamp = false;
+      if (err instanceof RedisQuotaExhaustedError) {
+        stamp = err.accountLabel === account.label;
+        if (!stamp) {
+          console.warn(
+            `[redis-chain] ATTRIBUTION GUARD: RedisQuotaExhaustedError names "${err.accountLabel}" ` +
+              `but walked account is "${account.label}" — NOT stamping (cross-slot contagion blocked).`,
+          );
+        }
+      } else if (responseIndicatesQuotaExhaustion(0, message)) {
+        const mentionsOther = buildAccountChain()
+          .map((a) => a.label)
+          .some((label) => label !== account.label && new RegExp(`\\b${label}\\b`).test(message));
+        stamp = !mentionsOther;
+        if (!stamp) {
+          console.warn(
+            `[redis-chain] ATTRIBUTION GUARD: quota-shaped error names another account, ` +
+              `not "${account.label}" — NOT stamping (aggregated sibling failure).`,
+          );
+        }
+      }
+      if (stamp) {
         markAccountQuotaExhausted(account.label);
+        assertCooldownInvariant(account.label);
       }
       attempts.push({ account: account.label, ok: false, error: message });
     }
