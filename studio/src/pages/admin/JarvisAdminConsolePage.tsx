@@ -5,6 +5,7 @@ import { JarvisAdminGate, JarvisBootSequence } from '../../components/admin/jarv
 import { TwoFASentinelModal } from '../../components/admin/jarvis/TwoFASentinelModal';
 import { useAdminVoice } from '../../components/admin/jarvis/useAdminVoice';
 import { controlPlane } from '../../services/controlPlane';
+import { authService } from '../../services/authService';
 import { detectDestructiveReason } from '../../components/admin/jarvis/jarvisPersona';
 
 interface Message {
@@ -216,12 +217,9 @@ export function JarvisAdminConsolePage() {
           <button
             type="button"
             onClick={() => {
-              try {
-                localStorage.removeItem('jarvis_admin_trusted_until');
-              } catch {
-                // ignore
-              }
-              setPhase('gate');
+              // বাংলা: ট্রাস্ট এখন সার্ভারের ডাটাবেসে — তাই LOCK মানে সার্ভার-সাইড
+              // revocation (local কী-ছাড়াও)। এরপর ঢুকতে আবার authentication code লাগবে।
+              authService.revokeTrustedBrowser().finally(() => setPhase('gate'));
             }}
             title="Lock Terminal & Revoke 7-Day Trust"
             className="flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-950/20 px-2.5 py-1 text-[11px] text-red-300 transition hover:bg-red-900/40 hover:text-white"
@@ -247,7 +245,7 @@ export function JarvisAdminConsolePage() {
       </header>
 
       {/* Main Center Stage */}
-      <main className="relative z-10 flex-1 flex flex-col items-center justify-between p-6 max-w-feed mx-auto w-full gap-6">
+      <main className="relative z-10 flex-1 flex flex-col items-center justify-between p-6 max-w-4xl mx-auto w-full gap-6">
         {/* Arc-Reactor Section */}
         <div className="flex flex-col items-center gap-3 mt-4">
           <ArcReactorOrb state={orbState} size={150} onClick={toggleListening} />
