@@ -296,6 +296,7 @@ export const AIStudio: React.FC = () => {
               initialInput={input}
               onInputChange={setInput}
               showDock
+              showSatisfactionPulse
               dockActions={[
                 { id: 'preview', label: 'Preview', icon: Globe, onClick: () => gotoSurface('preview') },
                 { id: 'mobile', label: 'Mobile', icon: Smartphone, onClick: () => gotoSurface('mobile') },
