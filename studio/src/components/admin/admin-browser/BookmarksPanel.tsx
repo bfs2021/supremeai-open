@@ -25,12 +25,18 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
   return (
     <AnimatePresence>
       {show && (
-        <motion.div
-          initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 220, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          className="bg-[#0d1117] border-r border-cyan-500/20 overflow-y-auto"
-        >
+        /* P2 width->transform (2026-10-25 report Table 8 row 10, deferred by
+           #1303): fixed 220px clip wrapper + transform slide from the left
+           edge; scroll moves to the inner layer so the slide is compositor-
+           only instead of animating the flex row's width. */
+        <div className="w-[220px] shrink-0 overflow-hidden bg-[#0d1117] border-r border-cyan-500/20">
+          <motion.div
+            initial={{ x: -220, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: -220, opacity: 0 }}
+            transition={{ duration: 0.28, ease: 'easeOut' }}
+            className="h-full overflow-y-auto"
+          >
           <div className="p-3">
             <h4 className="text-xs font-bold text-cyan-400 uppercase tracking-wider mb-3">Bookmarks</h4>
 
@@ -55,7 +61,8 @@ export const BookmarksPanel: React.FC<BookmarksPanelProps> = ({
               </div>
             ))}
           </div>
-        </motion.div>
+          </motion.div>
+        </div>
       )}
     </AnimatePresence>
   );
