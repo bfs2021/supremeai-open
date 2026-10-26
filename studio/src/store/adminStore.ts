@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import { authService } from '../services/authService';
 import { updateTokenCache } from '../services/apiClient';
-import { clearAdminToken, getAdminToken, setAdminToken } from '../services/tokenStorage';
+import {
+  clearAdminToken,
+  clearTrustedBrowserToken,
+  getAdminToken,
+  getTrustedBrowserToken,
+  setAdminToken,
+} from '../services/tokenStorage';
 import { LEGACY_ADMIN_TOKEN_KEY } from './authStore';
 import { eventBus, Events } from '../lib/componentEventBus';
 
@@ -29,8 +35,8 @@ const decodeJwt = (token: string): Record<string, unknown> | null => {
   }
 };
 
-const buildProvisioningUri = (email: string, secret: string): string =>
-  `otpauth://totp/SupremeAI:${encodeURIComponent(email)}?secret=${secret}&issuer=SupremeAI&digits=6&period=30`;
+// বাংলা: buildProvisioningUri সরানো হয়েছে — QR setup UI এখন আর code-only
+// gate-এর অংশ নয়; TOTP secret env/vault (SUPREMEAI_ADMIN_TOTP_SECRET) থেকেই আসে।
 
 const persistAdminToken = (token: unknown): token is string => {
   if (typeof token !== 'string' || token.trim().length < 20) return false;
@@ -45,7 +51,11 @@ interface AdminState {
   setAdminRole: (val: string | null) => void;
   adminError: string;
   setAdminError: (val: string) => void;
-  handleAdminLogin: (password?: string) => Promise<void>;
+  // বাংলা: code-only gate — authentication code ছাড়া প্রবেশ নেই।
+  // ১ম বার code দেওয়া বাধ্যতামূলক; ৭-দিন মনে-রাখো চালু থাকলে সেটি
+  // ডাটাবেসে সেভ হয় এবং মেয়াদের মধ্যে tryTrustedBrowser নীরবে ঢুকিয়ে দেয়।
+  handleAdminLogin: () => Promise<void>;
+  tryTrustedBrowser: () => Promise<boolean>;
   handleAdminLogout: () => void;
   actionStatus: string;
   setActionStatus: (val: string) => void;
@@ -65,10 +75,6 @@ interface AdminState {
   setTotpSecret: (val: string) => void;
   provisioningUri: string;
   setProvisioningUri: (val: string) => void;
-  recoveryCodes: string[];
-  recoveryCode: string;
-  setRecoveryCode: (val: string) => void;
-  recoverTotp: () => Promise<void>;
   resetTotpSetup: () => Promise<void>;
 }
 
@@ -118,118 +124,71 @@ export const useAdminStore = create<AdminState>((set, get) => ({
   setTotpSecret: (val) => set({ totpSecret: val }),
   provisioningUri: '',
   setProvisioningUri: (val) => set({ provisioningUri: val }),
-  recoveryCodes: [],
-  recoveryCode: '',
-  setRecoveryCode: (val) => set({ recoveryCode: val }),
-  recoverTotp: async () => {
-    const { recoveryCode, adminEmail } = get();
-    if (recoveryCode && recoveryCode.trim().length >= 4) {
-      const cleanEmail = adminEmail.trim() || 'admin@supremeai.com';
-      const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-      const payload = btoa(JSON.stringify({
-        sub: 'admin-recovery',
-        uid: 'admin-recovery',
-        email: cleanEmail,
-        role: 'admin',
-        type: 'access',
-        exp: Math.floor(Date.now() / 1000) + 7 * 86400,
-      }));
-      const mockToken = `${header}.${payload}.recovery_authorized`;
-      if (persistAdminToken(mockToken)) {
-        eventBus.emit(Events.AUTH_LOGIN, { source: 'admin_store', timestamp: Date.now() });
-        set({
-          adminAuthenticated: true,
-          adminRole: 'admin',
-          otpRequired: false,
-          totpSetupRequired: false,
-          adminOtp: '',
-          adminError: '',
-          recoveryCode: '',
-        });
-        return;
-      }
-    }
-    set({ adminError: 'Invalid recovery code. Please enter emergency code or use Fast-Pass.' });
-  },
-  handleAdminLogin: async (password?: string) => {
-    const { adminEmail, otpRequired, adminOtp, rememberBrowser } = get();
-    const cleanEmail = adminEmail.trim();
-    const cleanPassword = password?.trim() || '';
+  // বাংলা: আগের recoverTotp লোকাল mock টোকেন বানাত (bypass) — পুরোপুরি বাদ।
+  // Bypass নেই: প্রথমবার অবশ্যই ৬-ডিজিট authentication code দিতে হবে।
+  handleAdminLogin: async () => {
+    const { adminOtp, rememberBrowser } = get();
+    const cleanOtp = adminOtp.trim();
 
-    if (!otpRequired && (!cleanEmail || !cleanPassword)) return;
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      set({ adminError: 'Authentication code must be exactly 6 digits.' });
+      return;
+    }
     set({ adminError: '' });
 
     try {
-      if (!otpRequired) {
-        // Step 1+2: Native backend login (no Firebase)
-        const data = await authService.adminLogin(cleanEmail, cleanPassword);
-
-        if (data.status === 'trusted_browser' && persistAdminToken(data.token)) {
-          const decoded = decodeJwt(data.token);
-          set({ adminAuthenticated: true, adminRole: decoded?.role === 'admin' ? 'admin' : null });
-          eventBus.emit(Events.AUTH_LOGIN, { source: 'admin_store', timestamp: Date.now() });
-          return;
-        }
-
-        if (data.status === 'otp_required') {
-          set({ otpRequired: true });
-        } else if (data.status === 'totp_setup_required') {
-          try {
-            const setupData = await authService.adminTotpSetup();
-            set({
-              totpSetupRequired: true,
-              otpRequired: true,
-              totpSecret: setupData.secret,
-              recoveryCodes: setupData.recovery_codes || [],
-              provisioningUri: setupData.provisioning_uri || buildProvisioningUri(cleanEmail, setupData.secret || '')
-            });
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } catch (setupErr: any) {
-            const errStr = typeof setupErr?.message === 'string' ? setupErr.message : 'Failed to setup TOTP.';
-            set({ adminError: errStr });
-          }
-        } else if (persistAdminToken(data.token)) {
-            const decoded = decodeJwt(data.token);
-            if (!decoded) {
-              set({ adminError: 'Authentication token is invalid. Please sign in again.' });
-              return;
-            }
-            set({ adminAuthenticated: true, adminRole: decoded?.role === 'admin' ? 'admin' : null });
-            eventBus.emit(Events.AUTH_LOGIN, { source: 'admin_store', timestamp: Date.now() });
-        } else {
-          set({ adminError: 'Not authorized as admin.' });
-        }
-      } else {
-        // Step 3: Verify TOTP (native)
-        try {
-          const data = await authService.adminTotpVerify(adminOtp.trim(), rememberBrowser);
-          if (persistAdminToken(data.token)) {
-            const decoded = decodeJwt(data.token);
-            if (decoded && typeof decoded.role === 'string') {
-              set({ adminRole: decoded.role });
-            }
-          } else {
-            set({ adminError: 'Authentication token missing. Please sign in again.' });
-            return;
-          }
-          
-          eventBus.emit(Events.AUTH_LOGIN, {
-            source: 'admin_store',
-            timestamp: Date.now()
-          });
-          
-          set({ adminAuthenticated: true, otpRequired: false, totpSetupRequired: false, adminOtp: '' });
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } catch (verifyErr: any) {
-          const errStr = typeof verifyErr?.message === 'string' ? verifyErr.message : 'Invalid verification code.';
-          set({ adminError: errStr });
-        }
+      // বাংলা: সার্ভারই একমাত্র যাচাইকারী। rememberBrowser=true হলে সার্ভার
+      // ব্রাউজার-টোকেন ডাটাবেসে ৭ দিনের মেয়াদে সেভ করে; authService সেটি
+      // সংরণ করে — পরেরবার tryTrustedBrowser নীরবে প্রবেশ করাবে।
+      const data = await authService.adminTotpVerify(cleanOtp, rememberBrowser);
+      if (!persistAdminToken(data.token)) {
+        set({ adminError: 'Authentication token missing. Please sign in again.' });
+        return;
       }
+      const decoded = decodeJwt(data.token);
+      if (decoded && typeof decoded.role === 'string') {
+        set({ adminRole: decoded.role });
+      }
+
+      eventBus.emit(Events.AUTH_LOGIN, {
+        source: 'admin_store',
+        timestamp: Date.now(),
+      });
+
+      set({ adminAuthenticated: true, otpRequired: false, totpSetupRequired: false, adminOtp: '' });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (err: any) {
-      const msg = err && typeof err === 'object' && err.message ? String(err.message) : (typeof err === 'object' ? JSON.stringify(err) : String(err));
-      set({ adminError: 'Connection failed: ' + msg });
+    } catch (verifyErr: any) {
+      const errStr = typeof verifyErr?.message === 'string' ? verifyErr.message : 'Invalid authentication code.';
+      set({ adminError: errStr });
     }
+  },
+
+  // বাংলা: নীরব পুনঃপ্রবেশ — DB-ব্যাকড trusted-browser টোকেন সার্ভারে যাচাই।
+  // বৈধ হলে admin JWT, অবৈধ/মেয়াদোত্তীর্ণ হলে টোকেন মুছে false — fail-closed।
+  tryTrustedBrowser: async () => {
+    const trusted = getTrustedBrowserToken();
+    if (!trusted) return false;
+    try {
+      const data = await authService.adminTrustedBrowserLogin(trusted);
+      if (data.status === 'trusted_browser' && typeof data.token === 'string' && persistAdminToken(data.token)) {
+        const decoded = decodeJwt(data.token);
+        eventBus.emit(Events.AUTH_LOGIN, {
+          source: 'admin_store_trusted_browser',
+          timestamp: Date.now(),
+        });
+        set({
+          adminAuthenticated: true,
+          adminRole: decoded?.role === 'admin' ? 'admin' : null,
+          adminError: '',
+          otpRequired: false,
+        });
+        return true;
+      }
+    } catch {
+      // টোকেন অবৈধ/মেয়াদোত্তীর্ণ — নিচে মুছে ফেলা হয়; gate আবার code চাইবে।
+    }
+    clearTrustedBrowserToken();
+    return false;
   },
   handleAdminLogout: async () => {
     try {
