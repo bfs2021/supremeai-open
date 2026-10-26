@@ -1,16 +1,25 @@
 """SupremeAI Native Admin Authentication Module (Zero-Firebase).
 
 Provides native administrative authentication endpoints for SupremeAI:
-- POST /api/admin/login
-- POST /api/admin/totp-setup
-- POST /api/admin/totp-verify
-- POST /api/admin/logout
-- GET  /api/admin/me
+- POST   /api/admin/login
+- POST   /api/admin/totp-setup
+- POST   /api/admin/totp-verify
+- POST   /api/admin/logout
+- GET    /api/admin/me
+- GET    /api/admin/trusted-browsers
+- DELETE /api/admin/trusted-browsers/{browser_id}
+- DELETE /api/admin/trusted-browsers
 
 Features:
 - Standard RFC 7519 HS256 JWT issuance and validation (zero-dependency fallback).
 - RFC 6238 Time-based One-Time Password (TOTP) verification with drift tolerance.
 - Configurable password and email allow-list with bcrypt / constant-time verification.
+- বাংলা: trusted-browser ৭-দিন মনে-রাখো এখন SQLite ডাটাবেসে (trusted_browsers
+  টেবিল, SHA-256 হ্যাশ) — আগের in-memory registry restart-এ হারিয়ে যেত।
+- বাংলা (code-only gate): login-এ বৈধ trusted token (body/header/cookie)
+  থাকলে email/password ছাড়াই admin JWT — user dashboard থেকে admin-এ ঢুকতে
+  শুধু authentication code যথেষ্ট। টোকেন অবৈধ আর credential না থাকলে
+  fail-closed 401 — কোনো bypass নেই, প্রথমবার code দেওয়া বাধ্যতামূলক।
 """
 
 from __future__ import annotations
@@ -47,7 +56,44 @@ PRIMARY_OWNER_EMAIL = "niloyjoy7@gmail.com"
 DEFAULT_ADMIN_UID = "admin-root-001"
 
 # In-memory registry for trusted browser sessions (multi-tier persistence)
-_trusted_browser_registry: dict[str, dict[str, Any]] = {}
+# বাংলা: in-memory registry SQLite-এ উন্নীত — restart-এও ৭-দিন trust টেকে
+# ("database e browser save hoa thakbe" — ইউজারের চাহিদা অনুযায়ী)।
+try:  # pragma: no cover - import fallback mirrors service/app.py
+    from service.storage import (
+        get_valid_trusted_browser,
+        list_trusted_browsers_for_user,
+        purge_expired_trusted_browsers,
+        revoke_all_trusted_browsers_for_user,
+        revoke_trusted_browser_by_hash,
+        revoke_trusted_browser_by_id,
+        save_trusted_browser,
+    )
+except ImportError:  # pragma: no cover
+    try:
+        from gateway.service.storage import (
+            get_valid_trusted_browser,
+            list_trusted_browsers_for_user,
+            purge_expired_trusted_browsers,
+            revoke_all_trusted_browsers_for_user,
+            revoke_trusted_browser_by_hash,
+            revoke_trusted_browser_by_id,
+            save_trusted_browser,
+        )
+    except ImportError:  # pragma: no cover - fail-closed without persistence
+        get_valid_trusted_browser = None  # type: ignore[assignment]
+        list_trusted_browsers_for_user = None  # type: ignore[assignment]
+        purge_expired_trusted_browsers = None  # type: ignore[assignment]
+        revoke_all_trusted_browsers_for_user = None  # type: ignore[assignment]
+        revoke_trusted_browser_by_hash = None  # type: ignore[assignment]
+        revoke_trusted_browser_by_id = None  # type: ignore[assignment]
+        save_trusted_browser = None  # type: ignore[assignment]
+
+
+def _hash_trusted_token(token: str) -> str:
+    """SHA-256 hex digest — raw trusted-browser tokens are NEVER stored."""
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
 _pending_totp_setups: dict[str, dict[str, Any]] = {}
 _vault_cache: dict[str, str] = {}
 
@@ -219,21 +265,31 @@ def issue_trusted_browser_token(
     sig_b64 = _b64url_encode(sig)
     token = f"{header_b64}.{payload_b64}.{sig_b64}"
 
-    token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
-    _trusted_browser_registry[token_hash] = {
-        "id": browser_id,
-        "uid": uid,
-        "email": email,
-        "created_at": now,
-        "expires_at": now + days * 86400,
-        "revoked": False,
-    }
+    token_hash = _hash_trusted_token(token)
+    if save_trusted_browser is not None:
+        save_trusted_browser(
+            token_hash=token_hash,
+            email=email,
+            expires_at=float(now + days * 86400),
+            browser_id=browser_id,
+            uid=uid,
+        )
+        if purge_expired_trusted_browsers is not None:
+            try:
+                purge_expired_trusted_browsers()
+            except Exception as exc:  # pragma: no cover - purge is best-effort
+                logger.debug("Trusted-browser purge failed: %s", exc)
 
     return token, browser_id
 
 
 def verify_trusted_browser_token(token: str | None) -> dict[str, Any] | None:
-    """Validate a trusted browser token and return its payload if valid and unrevoked."""
+    """Validate a trusted browser token and return its payload if valid and unrevoked.
+
+    বাংলা: এখন সিদ্ধান্ত হয় SQLite ডাটাবেস থেকে — হ্যাশ টেবিলে থাকতে হবে,
+    revoked নয়, মেয়াদোত্তীর্ণ নয়। স্বাক্ষর বৈধ হলেও DB-রেকর্ড না থাকলে
+    অগ্রাহ্য (যেমন restart-এর পরে পুরনো সাইন-করা টোকেন ভেতরে ঢুকতে পারবে না)।
+    """
     if not token or not isinstance(token, str):
         return None
     token = token.strip()
@@ -243,10 +299,10 @@ def verify_trusted_browser_token(token: str | None) -> dict[str, Any] | None:
         payload = verify_admin_jwt(token)
         if payload.get("type") not in ("trusted_browser", "access"):
             return None
-        token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
-        if token_hash in _trusted_browser_registry:
-            record = _trusted_browser_registry[token_hash]
-            if record.get("revoked", False):
+        token_hash = _hash_trusted_token(token)
+        if get_valid_trusted_browser is not None:
+            record = get_valid_trusted_browser(token_hash)
+            if not record:
                 return None
         return payload
     except Exception as exc:
@@ -336,8 +392,11 @@ _pending_totp_setups: dict[str, dict[str, Any]] = {}
 # --- Request/Response Models ---
 
 class AdminLoginRequest(BaseModel):
-    email: str = Field(..., description="Admin email address")
-    password: str = Field(..., description="Admin password")
+    # বাংলা: code-only যুগে email/password ঐচ্ছিক — বৈধ trusted-browser
+    # টোকেনে পুনঃপ্রবেশে এগুলোর দরকার নেই; credential পথে দুটোই বাধ্যতামূলক
+    # (নিচে 400 ভেরিফিকেশন অক্ষুণ্ণ)।
+    email: str = Field(default="", description="Admin email address")
+    password: str = Field(default="", description="Admin password")
     trusted_browser_token: str | None = Field(default=None, description="Optional trusted browser token")
 
 
@@ -354,7 +413,52 @@ async def admin_login(
     request: Request,
     response: Response,
 ):
-    """Native Admin Login endpoint. Validates credentials, checks trusted browser, and initiates TOTP or issues JWT."""
+    """Native Admin Login endpoint. Validates credentials, checks trusted browser, and initiates TOTP or issues JWT.
+
+    বাংলা (code-only gate): বৈধ trusted-browser টোকেন (body / X-Trusted-Browser
+    header / HttpOnly cookie) থাকলে email/password ছাড়াই admin JWT — ৭ দিনের
+    মেয়াদের মধ্যে বার বার authentication code দিতে হয় না। টোকেন অবৈধ আর
+    credential অনুপস্থিত হলে fail-closed 401 — কোনো bypass নেই।
+    """
+    # --- Path 1: DB-backed trusted browser (7-day remember) — BEFORE credentials ---
+    trusted_token = (
+        payload.trusted_browser_token
+        or request.headers.get("X-Trusted-Browser")
+        or request.cookies.get(TRUSTED_BROWSER_COOKIE)
+    )
+    if trusted_token:
+        claims = verify_trusted_browser_token(trusted_token)
+        if claims:
+            trusted_email = (claims.get("email") or "").strip() or DEFAULT_ADMIN_EMAIL
+            token = issue_admin_jwt(
+                uid=DEFAULT_ADMIN_UID, email=trusted_email, role="admin",
+                expiry_hours=DEFAULT_TRUSTED_BROWSER_DAYS * 24,
+            )
+            secure, samesite = _get_cookie_secure_settings()
+            response.set_cookie(
+                TRUSTED_BROWSER_COOKIE,
+                trusted_token,
+                max_age=DEFAULT_TRUSTED_BROWSER_DAYS * 86400,
+                httponly=True,
+                secure=secure,
+                samesite=samesite,
+                path="/",
+            )
+            logger.info("Trusted browser re-entry (code-free) for admin: %s", trusted_email)
+            return {
+                "status": "trusted_browser",
+                "uid": DEFAULT_ADMIN_UID,
+                "token": token,
+                "role": "admin",
+                "email": trusted_email,
+            }
+        # মেয়াদোত্তীর্ণ/অজানা/revoked টোকেন — credential-ও না থাকলে কিছুই দেওয়া হবে না।
+        if not payload.email.strip() or not payload.password:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Trusted browser session expired or invalid. Please enter your authentication code again.",
+            )
+
     clean_email = payload.email.strip().lower()
     if not clean_email or not payload.password:
         raise HTTPException(
@@ -541,12 +645,7 @@ async def list_trusted_browsers(authorization: str | None = Header(None)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token required.")
     payload = verify_admin_jwt(authorization.split(" ", 1)[1])
     uid = payload.get("uid") or payload.get("sub")
-    now = int(time.time())
-    browsers = [
-        {"id": rec["id"], "created_at": rec["created_at"]}
-        for rec in _trusted_browser_registry.values()
-        if rec.get("uid") == uid and rec.get("expires_at", 0) > now and not rec.get("revoked", False)
-    ]
+    browsers = list_trusted_browsers_for_user(uid) if list_trusted_browsers_for_user else []
     return {"status": "ok", "browsers": browsers}
 
 
@@ -557,29 +656,50 @@ async def revoke_trusted_browser(browser_id: str, authorization: str | None = He
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token required.")
     payload = verify_admin_jwt(authorization.split(" ", 1)[1])
     uid = payload.get("uid") or payload.get("sub")
-    revoked = False
-    for rec in _trusted_browser_registry.values():
-        if rec.get("uid") == uid and rec.get("id") == browser_id:
-            rec["revoked"] = True
-            revoked = True
+    revoked = revoke_trusted_browser_by_id(uid, browser_id) if revoke_trusted_browser_by_id else False
     return {"status": "ok", "message": f"Browser {browser_id} revoked.", "revoked": revoked}
 
 
 @router.delete("/trusted-browsers")
-async def revoke_all_trusted_browsers(authorization: str | None = Header(None), response: Response = None):
-    """Revoke all trusted browsers for the authenticated admin."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token required.")
-    payload = verify_admin_jwt(authorization.split(" ", 1)[1])
-    uid = payload.get("uid") or payload.get("sub")
-    count = 0
-    for rec in _trusted_browser_registry.values():
-        if rec.get("uid") == uid:
-            rec["revoked"] = True
-            count += 1
-    if response:
-        response.delete_cookie(TRUSTED_BROWSER_COOKIE, path="/")
-    return {"status": "ok", "message": f"Revoked {count} trusted browser(s)."}
+async def revoke_all_trusted_browsers(
+    request: Request,
+    authorization: str | None = Header(None),
+    response: Response = None,
+    payload: dict | None = None,
+):
+    """Revoke trusted browsers.
+
+    বাংলা: দুই পথ —
+    1. Admin Bearer JWT → ঐ uid-এর সব trusted browser revoke (আগের চুক্তি)।
+    2. কাঁচা টোকেন উপস্থাপন (X-Trusted-Browser-Token header / body
+       {"trusted_browser_token"} / নিজের cookie) → শুধু সেটিই revoke —
+       টোকেনের ধারকই বৈধ মালিক; admin session ছাড়াও LOCK/রিভোক করা যায়।
+    কোনোটাই না থাকলে 401 (আগের মতোই fail-closed)।
+    """
+    if authorization and authorization.startswith("Bearer "):
+        jwt_payload = verify_admin_jwt(authorization.split(" ", 1)[1])
+        uid = jwt_payload.get("uid") or jwt_payload.get("sub")
+        count = revoke_all_trusted_browsers_for_user(uid) if revoke_all_trusted_browsers_for_user else 0
+        if response:
+            response.delete_cookie(TRUSTED_BROWSER_COOKIE, path="/")
+        return {"status": "ok", "message": f"Revoked {count} trusted browser(s).", "revoked": count > 0}
+
+    raw = None
+    if isinstance(payload, dict):
+        raw = payload.get("trusted_browser_token")
+    raw = (
+        raw
+        or request.headers.get("x-trusted-browser-token")
+        or request.headers.get("X-Trusted-Browser")
+        or request.cookies.get(TRUSTED_BROWSER_COOKIE)
+    )
+    if raw and raw.strip() and revoke_trusted_browser_by_hash is not None:
+        removed = revoke_trusted_browser_by_hash(_hash_trusted_token(raw.strip()))
+        if response:
+            response.delete_cookie(TRUSTED_BROWSER_COOKIE, path="/")
+        return {"status": "ok", "message": "Trusted browser revoked.", "revoked": removed}
+
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer token required.")
 
 
 @router.post("/logout")
