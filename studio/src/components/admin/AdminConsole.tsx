@@ -3,23 +3,17 @@ import { LoginView } from './auth/AdminLogin';
 import { AuthenticatedView } from './auth/AdminAuthenticated';
 import DashboardErrorBoundary from './DashboardErrorBoundary';
 
+// বাংলা (code-only gate): adminEmail/onAuthorize/recovery-জাতীয় সব prop সরানো
+// হয়েছে — gate এখন শুধু ৬-ডিজিট authentication code চায়, bypass কোনো পথ নেই।
+
 interface AdminConsoleProps {
   adminAuthenticated: boolean;
-  adminEmail: string;
-  setAdminEmail: (val: string) => void;
-  totpSetupRequired: boolean;
-  provisioningUri: string;
-  totpSecret: string;
-  onResetTotp: () => void;
-  onAuthorize: () => void;
-  recoveryCode: string;
-  setRecoveryCode: (val: string) => void;
-  recoverTotp: () => void;
-  recoveryCodes: string[];
   adminError: string;
-  handleAdminLogin: (password?: string) => void;
-  handleAdminOtpVerify: () => void;
-  handleAdminLogout: () => void;
+  handleAdminLogin: () => void;
+  adminOtp: string;
+  setAdminOtp: (val: string) => void;
+  rememberBrowser: boolean;
+  setRememberBrowser: (val: boolean) => void;
   actionStatus: string;
   skillQuery: string;
   setSkillQuery: (val: string) => void;
@@ -49,11 +43,6 @@ interface AdminConsoleProps {
   setNewUserRole: (val: string) => void;
   newUserPerms: string;
   setNewUserPerms: (val: string) => void;
-  otpRequired: boolean;
-  adminOtp: string;
-  setAdminOtp: (val: string) => void;
-  rememberBrowser: boolean;
-  setRememberBrowser: (val: boolean) => void;
   theme: 'dark' | 'light';
   toggleTheme: () => void;
 }
@@ -75,24 +64,12 @@ export function AdminConsole(props: AdminConsoleProps) {
     <div className="dashboard-aurora min-h-screen w-full flex flex-col overflow-hidden">
       <DashboardErrorBoundary>
         <LoginView
-          adminEmail={props.adminEmail}
-          setAdminEmail={props.setAdminEmail}
           adminError={props.adminError}
           handleAdminLogin={props.handleAdminLogin}
-          otpRequired={props.otpRequired}
           adminOtp={props.adminOtp}
           setAdminOtp={props.setAdminOtp}
           rememberBrowser={props.rememberBrowser}
           setRememberBrowser={props.setRememberBrowser}
-          totpSetupRequired={props.totpSetupRequired}
-          provisioningUri={props.provisioningUri}
-          totpSecret={props.totpSecret}
-          onResetTotp={props.onResetTotp}
-          onAuthorize={props.onAuthorize}
-          recoveryCode={props.recoveryCode}
-          setRecoveryCode={props.setRecoveryCode}
-          recoverTotp={props.recoverTotp}
-          recoveryCodes={props.recoveryCodes}
         />
       </DashboardErrorBoundary>
     </div>
