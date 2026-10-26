@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./apiClient', () => ({
   apiClient: {
     post: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -57,6 +58,30 @@ describe('authService (Native / Zero-Firebase)', () => {
       otp: '123456',
       remember_browser: true,
     });
+  });
+
+  it('adminTrustedBrowserLogin posts only the trusted_browser_token (code-free re-entry)', async () => {
+    (apiClient.post as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'trusted_browser',
+      token: 'fast-jwt',
+    });
+    const res = await authService.adminTrustedBrowserLogin('raw-browser-token');
+    expect(apiClient.post).toHaveBeenCalledWith('/api/admin/login', {
+      trusted_browser_token: 'raw-browser-token',
+    });
+    expect(res.status).toBe('trusted_browser');
+    expect(res.token).toBe('fast-jwt');
+  });
+
+  it('revokeTrustedBrowser sends the raw token via header', async () => {
+    (apiClient.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    localStorage.setItem('supreme_trusted_browser_token', 'raw-browser-token');
+    await authService.revokeTrustedBrowser();
+    expect(apiClient.delete).toHaveBeenCalledWith(
+      '/api/admin/trusted-browsers',
+      expect.objectContaining({ headers: { 'X-Trusted-Browser-Token': 'raw-browser-token' } })
+    );
+    expect(localStorage.getItem('supreme_trusted_browser_token')).toBeNull();
   });
 
   it('adminLogout posts to /api/admin/logout', async () => {
