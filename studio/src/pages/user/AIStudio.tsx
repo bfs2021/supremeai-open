@@ -80,7 +80,12 @@ const MobileAutoPanel: React.FC<MobileAutoPanelProps> = ({
           <MobileSimulator url={mirrorUrl} />
         </div>
       ) : (
-        <MobileEmptyState onBack={onBack} onOpenUrl={onOpenUrl} urlDraft={urlDraft} onUrlDraftChange={onUrlDraftChange} />
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
+          <div className="min-h-0 flex-1">
+            <MobileSimulator />
+          </div>
+          <MobileEmptyState onBack={onBack} onOpenUrl={onOpenUrl} urlDraft={urlDraft} onUrlDraftChange={onUrlDraftChange} />
+        </div>
       )}
     </div>
   );
@@ -92,56 +97,47 @@ const MobileEmptyState: React.FC<{
   urlDraft: string;
   onUrlDraftChange: (v: string) => void;
 }> = ({ onBack, onOpenUrl, urlDraft, onUrlDraftChange }) => (
-  <div className="flex h-full w-full items-center justify-center rounded-2xl border border-dashed border-white/10 bg-slate-900/40 p-6">
-    <div className="flex max-w-md flex-col items-center gap-3 text-center">
-      <span className="flex size-12 items-center justify-center rounded-xl border border-white/10 bg-slate-900 text-slate-400">
-        <Smartphone size={20} />
-      </span>
-      <h3 className="text-base font-semibold text-slate-200">Your mobile simulator — drive it yourself</h3>
-      <p className="text-sm leading-6 text-slate-500">
-        Ask SupremeAI to build something in the conversation, press{' '}
-        <span className="font-medium text-slate-300">Preview</span>, and it opens right here on this
-        phone frame when Mobile is your chosen surface. No conversation needed either — start below.
-      </p>
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="rounded-lg border border-white/10 bg-slate-900/80 px-4 py-2 text-xs font-medium text-slate-300 transition hover:border-purple-400/40 hover:text-white"
-        >
-          ← Back to conversation
-        </button>
+  // HOME LAUNCHER (owner request 2026-10-27): খালি অবস্থা আর dead-end dashed
+  // box নয় — ফোনটি এখন সরাসরি iOS-ঘরানার Home Launcher দেখায় (MobileSimulator
+  // নিজেই হ্যান্ডেল করে)। এই কম্পোনেন্টটি শুধু চিকন কন্ট্রোল বার — Back + URL form
+  // (data-testids অক্ষত: mobile-url-form, mobile-url-input)।
+  <div className="flex w-full shrink-0 items-center gap-2 rounded-2xl border border-white/10 bg-slate-900/60 p-2.5" data-testid="mobile-empty-controls">
+    <button
+      type="button"
+      onClick={onBack}
+      className="shrink-0 rounded-lg border border-white/10 bg-slate-900/80 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-purple-400/40 hover:text-white"
+    >
+      ← Back
+    </button>
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const v = urlDraft.trim();
+        if (/^https?:\/\//i.test(v)) onOpenUrl(v);
+      }}
+      className="flex min-w-0 flex-1 items-center gap-2"
+      data-testid="mobile-url-form"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-white/10 bg-slate-900/80 px-3 py-2">
+        <Globe size={13} className="shrink-0 text-slate-500" />
+        <input
+          type="text"
+          value={urlDraft}
+          onChange={(e) => onUrlDraftChange(e.target.value)}
+          placeholder="https://any-site.com — mirror it on the phone"
+          data-testid="mobile-url-input"
+          aria-label="URL to preview on the mobile simulator"
+          className="w-full min-w-0 bg-transparent font-mono text-[11px] text-slate-200 outline-none placeholder:text-slate-600"
+        />
       </div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          const v = urlDraft.trim();
-          if (/^https?:\/\//i.test(v)) onOpenUrl(v);
-        }}
-        className="mt-1 flex w-full items-center gap-2"
-        data-testid="mobile-url-form"
+      <button
+        type="submit"
+        disabled={!/^https?:\/\//i.test(urlDraft.trim())}
+        className="shrink-0 rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        <div className="flex flex-1 items-center gap-2 rounded-lg border border-white/10 bg-slate-900/80 px-3 py-2">
-          <Globe size={13} className="shrink-0 text-slate-500" />
-          <input
-            type="text"
-            value={urlDraft}
-            onChange={(e) => onUrlDraftChange(e.target.value)}
-            placeholder="https://any-site.com — open it on the phone"
-            data-testid="mobile-url-input"
-            aria-label="URL to preview on the mobile simulator"
-            className="w-full bg-transparent font-mono text-[11px] text-slate-200 outline-none placeholder:text-slate-600"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={!/^https?:\/\//i.test(urlDraft.trim())}
-          className="shrink-0 rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Open
-        </button>
-      </form>
-    </div>
+        Open
+      </button>
+    </form>
   </div>
 );
 
