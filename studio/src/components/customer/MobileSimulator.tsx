@@ -3,6 +3,7 @@ import { Card, Badge } from '../ui';
 import { Smartphone, Tablet, RefreshCw } from 'lucide-react';
 import { getApiBaseUrl } from '../../utils/api';
 import { getAuthHeaders } from '../../services/apiClient';
+import { HomeShell } from '../mobile/HomeShell';
 
 // Issue #1669 (CRITICAL): JWT কখনো iframe URL-এ যায় না। প্রতিটি external
 // render-এর আগে header-auth দিয়ে POST /api/browser/render-ticket কল হয়;
@@ -47,6 +48,12 @@ export function MobileSimulator({ html, url = '' }: MobileSimulatorProps) {
   const [reloadKey, setReloadKey] = useState(0);
 
   const needsProxy = /^https?:\/\//i.test(url.trim()) && !html;
+  // HOME LAUNCHER (owner request 2026-10-27, iOS-home-template): URL/HTML কিছু
+  // না থাকলে ফোন আর dead-end ফাঁকা স্ক্রিন দেখায় না — এখন একটি পূর্ণ
+  // iOS-ঘরানার Home Launcher (icons, swipe pages, widgets, notification/
+  // control center, wiggle reorder, app-launch zoom) স্ক্রিনে থাকে। Mirror ও
+  // agent-build path আগের মতোই অক্ষত।
+  const showLauncher = !html && !needsProxy;
 
   useEffect(() => {
     if (!needsProxy) {
@@ -130,9 +137,15 @@ export function MobileSimulator({ html, url = '' }: MobileSimulatorProps) {
                   className="w-full h-full"
                   sandbox="allow-scripts allow-forms"
                 />
+              ) : showLauncher ? (
+                // বাংলা: ফাঁকা অবস্থায় এখন আসল হোম-স্ক্রিন — নিচের হোম-বার ট্যাপ/
+                // উপরে-টানলে অ্যাপ বন্ধ, উপরে টানলে Notification Center।
+                <div className="absolute inset-0 z-0" data-testid="mobile-home-launcher">
+                  <HomeShell />
+                </div>
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-[11px] text-slate-500 font-mono">
-                  {needsProxy ? 'Preparing secure render session…' : 'Enter a URL to preview'}
+                  Preparing secure render session…
                 </div>
               )}
             </div>
@@ -141,7 +154,7 @@ export function MobileSimulator({ html, url = '' }: MobileSimulatorProps) {
         <div className="mt-4 flex items-center justify-between">
           <Badge variant="info">{selectedDevice.name}</Badge>
           <span className="text-[10px] text-slate-400 font-mono">
-            {currentWidth} x {currentHeight} • {orientation}
+            {showLauncher ? 'Home Launcher · demo OS' : `${currentWidth} x ${currentHeight} • ${orientation}`}
           </span>
         </div>
       </Card>
