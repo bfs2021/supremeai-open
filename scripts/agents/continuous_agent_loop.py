@@ -963,7 +963,9 @@ def run_cycle(
     # Auto-created CI incidents must be re-verified against live CI state
     # before claiming: if the referenced workflow is already green again,
     # the incident is resolved and any fix would duplicate landed work.
-    if not args.dry_run and _ci_issue_is_stale(issue):
+    # Runs in --dry-run too: the preview must show the same skips a real
+    # run will make (the check uses read-only GET endpoints only).
+    if _ci_issue_is_stale(issue):
         log("♻️", f"[Stale] #{issue_num} — pipeline already green on live main. Skipping ghost work.")
         return "stale"
 
@@ -1184,7 +1186,11 @@ Examples:
         args.loop = False
         exclude: set[str] = set()
         rc_str = run_cycle(args, exclude, token)
-        return 0 if rc_str == "done" else 1
+        # 'stale' (U3 skip) and 'idle' (task envelope handoff emitted) are
+        # correct non-work outcomes for a targeted run. Exiting 1 made
+        # external drivers treat a right answer as a failure and requeue the
+        # same ghost issue every cycle. Only 'fail' exits 1.
+        return 0 if rc_str in ("done", "stale", "idle", "green") else 1
 
     # ── loop mode (default + --loop) ──────────────────────────────────────
     exclude = set()
