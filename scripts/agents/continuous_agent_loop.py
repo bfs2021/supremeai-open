@@ -272,12 +272,12 @@ ROLE_METADATA: dict[str, dict[str, Any]] = {
     "ecosystem-scout": {
         "deliverable_type": "SCOUTING_DOSSIER_AND_ISSUES",
         "description": "Deep radar dissection of external tech; concrete live-proof proposals without code edits.",
-        "mcp_tools": ["search_web", "read_url_content", "github_search_repos", "github_repo_info"],
+        "mcp_tools": ["github_search_repos", "github_repo_info", "github_read_external_file", "github_collect_highlights", "docs_search"],
     },
     "human-eye": {
         "deliverable_type": "UX_AESTHETICS_REPORT",
         "description": "Frontend DevTools audit (console, network, Lighthouse, CSS) and styling specs.",
-        "mcp_tools": ["read_url_content", "cloudflare_analytics", "devtools-audit"],
+        "mcp_tools": ["cloudflare_analytics", "cloudflare_worker_status", "system_health", "health_dashboard"],
     },
     "rules-breaker": {
         "deliverable_type": "EXPLOIT_PROOF_AND_P0_ISSUE",
