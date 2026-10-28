@@ -238,6 +238,59 @@ ROLE_RULES: dict[str, str] = {
     "platform-guardian": "প্রজেক্টের সাথে যুক্ত অন্যান্য সমস্ত থার্ড-পার্টি প্ল্যাটফর্ম ও সার্ভিসের সার্বক্ষণিক তদারকি ও নজরদারি নিশ্চিত করা।",
 }
 
+ROLE_METADATA: dict[str, dict[str, Any]] = {
+    "solver": {
+        "deliverable_type": "CODE_PATCH",
+        "description": "Code implementation or bugfix with verified tests and clean rebase.",
+        "mcp_tools": ["github_workflow_runs", "github_get_failed_logs", "github_read_file", "bridge_submit_patch"],
+    },
+    "coder": {
+        "deliverable_type": "CODE_PATCH",
+        "description": "Code implementation or bugfix with verified tests and clean rebase.",
+        "mcp_tools": ["github_workflow_runs", "github_get_failed_logs", "github_read_file", "bridge_submit_patch"],
+    },
+    "ci-fixer": {
+        "deliverable_type": "CODE_PATCH",
+        "description": "Emergency CI greening: diagnose failure logs, fix root cause, submit patch.",
+        "mcp_tools": ["github_workflow_runs", "github_get_failed_logs", "github_read_file", "bridge_submit_patch"],
+    },
+    "auditor": {
+        "deliverable_type": "STRUCTURED_AUDIT_REPORT",
+        "description": "Multi-repo compliance, boundary sanitization, and dependency parity report.",
+        "mcp_tools": ["github_read_file", "github_repo_tree", "db_schema_inspect", "supabase_schema_inspect"],
+    },
+    "task-auditor": {
+        "deliverable_type": "STRUCTURED_AUDIT_REPORT",
+        "description": "Pre-landing compliance verification, secret leak audit, and boundary review.",
+        "mcp_tools": ["github_read_file", "github_list_prs", "guardian_evaluate_pr"],
+    },
+    "federation-auditor": {
+        "deliverable_type": "STRUCTURED_AUDIT_REPORT",
+        "description": "Satellite repositories sync, head commit parity, and drift audit.",
+        "mcp_tools": ["github_read_file", "github_repo_tree", "github_list_prs"],
+    },
+    "ecosystem-scout": {
+        "deliverable_type": "SCOUTING_DOSSIER_AND_ISSUES",
+        "description": "Deep radar dissection of external tech; concrete live-proof proposals without code edits.",
+        "mcp_tools": ["search_web", "read_url_content", "github_search_repos", "github_repo_info"],
+    },
+    "human-eye": {
+        "deliverable_type": "UX_AESTHETICS_REPORT",
+        "description": "Frontend DevTools audit (console, network, Lighthouse, CSS) and styling specs.",
+        "mcp_tools": ["read_url_content", "cloudflare_analytics", "devtools-audit"],
+    },
+    "rules-breaker": {
+        "deliverable_type": "EXPLOIT_PROOF_AND_P0_ISSUE",
+        "description": "Red-team chaos and boundary exploitation proof; P0-critical blocker filing.",
+        "mcp_tools": ["github_read_file", "redis_ping", "supabase_health", "status"],
+    },
+    "platform-guardian": {
+        "deliverable_type": "SERVICE_HEALTH_AND_CIRCUIT_STATUS",
+        "description": "Third-party platform sentinel, quota freshness, and circuit-breaker telemetry.",
+        "mcp_tools": ["render_service_health", "render_list_services", "supabase_health", "redis_stats", "cloudflare_worker_status"],
+    },
+}
+
 COMMON_RULES = """=== UNIVERSAL INVARIANTS (ALL ROLES MUST FOLLOW) ===
 1. Dual-Rebase: Rebase origin/main at work-start AND pre-push (0 behind).
 2. Boundary: Zero satellite code in repo root (src/*, service/*, packages/*).
@@ -518,6 +571,9 @@ def build_task_envelope(
         "role": role,
         "role_policy": "contributor",
         "role_description": role_description,
+        "deliverable_type": ROLE_METADATA.get(role, {}).get("deliverable_type", "CODE_PATCH"),
+        "deliverable_description": ROLE_METADATA.get(role, {}).get("description", "Execute role contract"),
+        "mcp_tools": ROLE_METADATA.get(role, {}).get("mcp_tools", ["github_workflow_runs", "github_read_file"]),
         "scope": {
             "touching_files": [],
             "forbidden_paths": list(ENVELOPE_FORBIDDEN_PATHS),
@@ -528,6 +584,11 @@ def build_task_envelope(
         "stop_conditions": [],
         "admin_gate": {"required": False, "status": "NOT_REQUIRED"},
         "specialist_prompt": specialist_prompt,
+        "mandatory_invariants": mandatory_invariant_checklist(),
+        "execution_tier": {
+            "tier_a": "Local committer: direct git rebase and test verification",
+            "tier_b": "Web/MCP remote: bridge_submit_patch with server-side auto-rebase and CI proxy verification",
+        },
         "submission": {
             "pathway": "bridge_submit_patch | pull_request",
             "reference": "AGENTS.md §2.1 Pathway 1 + §8 (bridge_submit_patch)",

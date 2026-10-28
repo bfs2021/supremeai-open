@@ -68,9 +68,40 @@ export async function getFailedLogs(accountId: string, runId: string): Promise<u
         });
         if (!logRes.ok) throw new Error(`Failed to fetch logs: ${logRes.status}`);
         const logText = await logRes.text();
-        // Return only the last 2000 characters of the log to prevent massive payloads
+        const lines = logText.split(/\r?\n/);
+        
+        // Error pattern detection: ##[error], Error:, FAIL, FAILED, panic, exception, traceback
+        const errorPattern = /(?:##\[error\]|error:|fatal:|fail(?:ed)?(?::|\s|!)|exception|traceback|panic)/i;
+        const matchedIndices: number[] = [];
+        for (let i = 0; i < lines.length; i++) {
+          if (errorPattern.test(lines[i])) {
+            matchedIndices.push(i);
+          }
+        }
+
+        let focusedErrors: string[] = [];
+        if (matchedIndices.length > 0) {
+          // Collect context lines around errors (up to 30 relevant lines)
+          const contextSet = new Set<number>();
+          for (const idx of matchedIndices) {
+            for (let offset = -2; offset <= 3; offset++) {
+              const targetIdx = idx + offset;
+              if (targetIdx >= 0 && targetIdx < lines.length) {
+                contextSet.add(targetIdx);
+              }
+            }
+          }
+          const sortedIndices = Array.from(contextSet).sort((a, b) => a - b).slice(0, 50);
+          focusedErrors = sortedIndices.map(i => lines[i]);
+        }
+
         const snippet = logText.slice(-2000);
-        return { jobName: job.name, logsSnippet: snippet };
+        return {
+          jobName: job.name,
+          errorCount: matchedIndices.length,
+          focusedErrorLines: focusedErrors.length > 0 ? focusedErrors.join("\n") : undefined,
+          logsSnippet: snippet,
+        };
       } catch (e) {
         return { jobName: job.name, error: (e as Error).message };
       }
